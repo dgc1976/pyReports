@@ -43,17 +43,20 @@ from jinja2 import Template
 # 1. UTILIDADES Y REINTENTOS PARA SHAREPOINT / HTTP
 # ==============================================================================
 def normalize_path(p: str) -> str:
-    """Normaliza barras y limpia nombres de biblioteca duplicados."""
+    """
+    Normaliza barras y elimina únicamente el prefijo de la biblioteca raíz
+    ('Documentos compartidos' o 'Shared Documents') si viene incluido,
+    respetando subcarpetas reales como 'Documentos/Extraciones...'.
+    """
     if not p:
         return ""
     p = p.replace("\\", "/").strip("/")
     while "//" in p:
         p = p.replace("//", "/")
-    
-    # Si la ruta comienza por el nombre de la biblioteca por defecto, se elimina
-    # ya que /drive/root en Microsoft Graph ya apunta a la raíz de la biblioteca.
+
     partes = p.split("/")
-    if partes and partes[0].lower() in ("documentos compartidos", "shared documents", "documentos"):
+    # Solo recortamos si el usuario incluyó el nombre de la biblioteca raíz
+    if partes and partes[0].lower() in ("documentos compartidos", "shared documents"):
         partes = partes[1:]
     return "/".join(partes)
 
@@ -63,7 +66,7 @@ def encode_path_segments(p: str) -> str:
     if not p:
         return ""
     return "/".join(
-        urllib.parse.quote(seg, safe="@!$&'()*+,;=._- ")
+        urllib.parse.quote(seg, safe="@!$&'()*,;=._- ")
         for seg in p.split("/")
     )
 
@@ -71,7 +74,7 @@ def encode_path_segments(p: str) -> str:
 def build_root_item_path(folder: str, file_name: Optional[str] = None) -> str:
     folder_enc = encode_path_segments(folder)
     if file_name:
-        name_enc = urllib.parse.quote(file_name, safe="@!$&'()*+,;=._- ")
+        name_enc = urllib.parse.quote(file_name, safe="@!$&'()*,;=._- ")
         path = f"{folder_enc}/{name_enc}" if folder_enc else name_enc
     else:
         path = folder_enc
@@ -239,8 +242,8 @@ class ConfigManager:
             "client_secret": "",
             "host": "orangees.sharepoint.com",
             "site_name": "TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE",
-            "target_folder": "Documentos/Extraciones Datos Informes/Informes",
-            "web_url_template": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/Informes/{file_name}?web=1"
+            "target_folder": "Documentos/Extraciones Datos Informes/PedidosVentahora/Envios_MM",
+            "web_url_template": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/PedidosVentahora/Envios_MM/{file_name}?csf=1&web=1"
         },
         "smtp": {
             "server": "fsp.si.orange.es",
@@ -1047,7 +1050,7 @@ class ReportPipeline:
         file_name = os.path.basename(local_html_path)
 
         # 4. Subida a SharePoint y captura de webUrl directa
-        sp_folder = self.cfg["sharepoint"].get("target_folder", "Documentos/Extraciones Datos Informes/Informes")
+        sp_folder = self.cfg["sharepoint"].get("target_folder", "Documentos/Extraciones Datos Informes/PedidosVentahora/Envios_MM")
         uploaded_url = None
         if self.sp_client:
             try:
@@ -1057,7 +1060,7 @@ class ReportPipeline:
         else:
             logging.warning("Se omitió la subida a SharePoint porque el cliente Graph no está disponible.")
 
-        # Si Graph devolvió la webUrl directa, la usamos; en caso contrario, usamos la plantilla
+        # Si Graph devolvió la webUrl directa, la usamos; en caso contrario, usamos la plantilla corporativa
         if uploaded_url:
             sharepoint_web_url = uploaded_url
         else:
