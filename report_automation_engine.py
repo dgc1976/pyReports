@@ -335,7 +335,7 @@ class ConfigManager:
         if getattr(args, "log_dir", None):
             self.config["logging"]["log_dir"] = args.log_dir
         if getattr(args, "local_dir", None):
-            self.config["reports"]["ir"]]["local_output_dir"] = args.local_dir
+            self.config["reports"]["ir"]["local_output_dir"] = args.local_dir
         if getattr(args, "sp_folder", None):
             self.config["sharepoint"]["target_folder"] = args.sp_folder
         if getattr(args, "sp_ini", None):
