@@ -5,13 +5,14 @@ Framework de Automatización de Reportes Operativos - MASORANGE
 Diseño: Programación Orientada a Objetos (POO) & Arquitectura Modular por Capas.
 
 Capas:
-  1. ConfigManager: Carga configuración JSON y lee credenciales de D:\\Automaticos\\Talend\\Sharepoint\\config.ini.
-  2. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph para SharePoint.
-  3. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
-  4. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
-  5. IRReportProcessor: Especialización para IR, Entradas/Cierres y generación de HTML.
-  6. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
-  7. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email).
+  1. Setup & Logging: Configuración prioritaria con FileHandler en D:\Automaticos\Logs\reports.
+  2. ConfigManager: Carga configuración JSON y lee credenciales de config.ini (Talend).
+  3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph para SharePoint.
+  4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
+  5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
+  6. IRReportProcessor: Especialización para IR, Entradas/Cierres y generación de HTML.
+  7. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
+  8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email).
 
 Autor: David González Cogolludo
 Departamento: Operaciones MASORANGE
@@ -93,9 +94,9 @@ class GraphAuth:
     """Gestiona la autenticación OAuth2 con Microsoft Graph (App / Client Credentials)."""
 
     def __init__(self, tenant_id: str, client_id: str, client_secret: str):
-        self.tenant_id = tenant_id
-        self.client_id = client_id
-        self.client_secret = client_secret
+        self.tenant_id = tenant_id.strip("'\" \t\r\n")
+        self.client_id = client_id.strip("'\" \t\r\n")
+        self.client_secret = client_secret.strip("'\" \t\r\n")
         self.token_expiry = 0
         self.access_token = None
 
@@ -111,10 +112,14 @@ class GraphAuth:
             "scope": "https://graph.microsoft.com/.default"
         }
         resp = requests.post(url, data=data, timeout=20)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            logging.error(f"Error al obtener token de Azure AD: HTTP {resp.status_code} - {resp.text}")
+            resp.raise_for_status()
+
         token_data = resp.json()
         self.access_token = token_data["access_token"]
         self.token_expiry = time.time() + token_data.get("expires_in", 3600)
+        logging.info("Token de Microsoft Graph obtenido exitosamente.")
         return self.access_token
 
 
@@ -123,8 +128,8 @@ class SharePointClient:
 
     def __init__(self, auth: GraphAuth, host: str, site_name: str):
         self.auth = auth
-        self.host = host
-        self.site_name = site_name
+        self.host = host.strip("'\" \t\r\n")
+        self.site_name = site_name.strip("'\" \t\r\n")
         self.session = requests.Session()
         self.site_id = None
         self._initialize_site()
@@ -136,6 +141,7 @@ class SharePointClient:
             "Accept": "application/json"
         })
         url = f"https://graph.microsoft.com/v1.0/sites/{self.host}:/sites/{self.site_name}/"
+        logging.info(f"Consultando Site ID en SharePoint: {url}")
         resp = with_retries(self.session, "GET", url, timeout=20)
         resp.raise_for_status()
         self.site_id = resp.json()["id"]
@@ -159,7 +165,7 @@ class SharePointClient:
         self.refresh_headers()
         file_name = os.path.basename(local_file_path)
         file_size = os.path.getsize(local_file_path)
-        logging.info(f"Subiendo a SharePoint '{file_name}' ({file_size} bytes) a carpeta '{target_folder}'...")
+        logging.info(f"Iniciando subida a SharePoint de '{file_name}' ({file_size:,} bytes) en carpeta '{target_folder}'...")
 
         if file_size > 4 * 1024 * 1024:
             # Subida por bloques para archivos grandes (> 4MB)
@@ -187,7 +193,7 @@ class SharePointClient:
                     )
                     upload_resp.raise_for_status()
                     bytes_uploaded += len(chunk)
-                    logging.info(f"Progreso subida: {bytes_uploaded}/{file_size} bytes ({(bytes_uploaded / file_size) * 100:.1f}%)")
+                    logging.info(f"Progreso subida: {bytes_uploaded:,}/{file_size:,} bytes ({(bytes_uploaded / file_size) * 100:.1f}%)")
         else:
             # Subida directa en una sola petición (< 4MB)
             url = self.build_url(target_folder, file_name, "/content")
@@ -251,9 +257,13 @@ class ConfigManager:
 
         # 1. Cargar fichero JSON si existe
         if config_path and os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                self._deep_update(self.config, loaded)
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    self._deep_update(self.config, loaded)
+                    logging.info(f"Configuración cargada desde '{config_path}'")
+            except Exception as e:
+                logging.error(f"Error al leer '{config_path}': {e}")
 
         # 2. Cargar credenciales desde D:\Automaticos\Talend\Sharepoint\config.ini
         self._load_credentials_from_ini()
@@ -274,26 +284,39 @@ class ConfigManager:
                 ini_parser = configparser.ConfigParser()
                 ini_parser.read(ini_path, encoding="utf-8")
 
-                section = "general" if "general" in ini_parser else ("sharepoint" if "sharepoint" in ini_parser else None)
-                if section:
-                    sec = ini_parser[section]
-                    if "tenant_id" in sec and sec["tenant_id"]:
-                        self.config["sharepoint"]["tenant_id"] = sec["tenant_id"].strip()
-                    if "client_id" in sec and sec["client_id"]:
-                        self.config["sharepoint"]["client_id"] = sec["client_id"].strip()
-                    if "client_secret" in sec and sec["client_secret"]:
-                        self.config["sharepoint"]["client_secret"] = sec["client_secret"].strip()
-                    if "host" in sec and sec["host"]:
-                        self.config["sharepoint"]["host"] = sec["host"].strip()
-                    if "site" in sec and sec["site"]:
-                        self.config["sharepoint"]["site_name"] = sec["site"].strip()
-                    elif "site_name" in sec and sec["site_name"]:
-                        self.config["sharepoint"]["site_name"] = sec["site_name"].strip()
-                    logging.info("Credenciales de SharePoint cargadas exitosamente desde config.ini.")
+                # Búsqueda insensible a mayúsculas/minúsculas de la sección
+                target_section = None
+                for s in ini_parser.sections():
+                    if s.lower() in ("general", "sharepoint", "default"):
+                        target_section = s
+                        break
+
+                if target_section:
+                    sec = ini_parser[target_section]
+                    for key, val in sec.items():
+                        clean_val = val.strip("'\" \t\r\n")
+                        k_lower = key.lower()
+                        if k_lower == "tenant_id" and clean_val:
+                            self.config["sharepoint"]["tenant_id"] = clean_val
+                        elif k_lower == "client_id" and clean_val:
+                            self.config["sharepoint"]["client_id"] = clean_val
+                        elif k_lower == "client_secret" and clean_val:
+                            self.config["sharepoint"]["client_secret"] = clean_val
+                        elif k_lower == "host" and clean_val:
+                            self.config["sharepoint"]["host"] = clean_val
+                        elif k_lower in ("site", "site_name") and clean_val:
+                            self.config["sharepoint"]["site_name"] = clean_val
+
+                    # Validar si las 3 claves esenciales están presentes
+                    sp_c = self.config["sharepoint"]
+                    if sp_c.get("tenant_id") and sp_c.get("client_id") and sp_c.get("client_secret"):
+                        logging.info("Credenciales de SharePoint cargadas exitosamente desde config.ini.")
+                    else:
+                        logging.warning("Faltan campos obligatorios (tenant_id/client_id/client_secret) en config.ini.")
                 else:
-                    logging.warning(f"No se encontró la sección [general] en {ini_path}")
+                    logging.warning(f"No se encontró ninguna sección válida en '{ini_path}' (secciones detectadas: {ini_parser.sections()})")
             except Exception as e:
-                logging.error(f"Error al leer credenciales desde {ini_path}: {e}")
+                logging.error(f"Error al parsear '{ini_path}': {e}")
         else:
             logging.warning(f"Fichero de credenciales INI no encontrado en '{ini_path}'.")
 
@@ -705,7 +728,7 @@ class IRReportProcessor(BaseReportProcessor):
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(html_content)
 
-        logging.info(f"Dashboard interactivo HTML generado en disco: '{output_path}' ({len(html_content)} bytes)")
+        logging.info(f"Dashboard interactivo HTML generado en disco: '{output_path}' ({len(html_content):,} bytes)")
         return output_path
 
     def render_email_body(self, transformed_data: Dict[str, Any], target_date: date, sharepoint_web_url: str) -> str:
@@ -969,7 +992,11 @@ class ReportPipeline:
         # Inicialización del cliente SharePoint con credenciales cargadas de config.ini
         sp_cfg = self.cfg["sharepoint"]
         self.sp_client = None
-        if sp_cfg.get("tenant_id") and sp_cfg.get("client_id") and sp_cfg.get("client_secret"):
+        has_tenant = bool(sp_cfg.get("tenant_id"))
+        has_client = bool(sp_cfg.get("client_id"))
+        has_secret = bool(sp_cfg.get("client_secret"))
+
+        if has_tenant and has_client and has_secret:
             try:
                 auth = GraphAuth(
                     tenant_id=sp_cfg["tenant_id"],
@@ -982,9 +1009,12 @@ class ReportPipeline:
                     site_name=sp_cfg["site_name"]
                 )
             except Exception as e:
-                logging.error(f"No se pudo inicializar SharePointClient: {e}")
+                logging.exception(f"Fallo al inicializar SharePointClient: {e}")
         else:
-            logging.warning("Credenciales de SharePoint ausentes o incompletas en config.ini. Se omitirá la subida a Graph.")
+            logging.warning(
+                f"Credenciales de SharePoint incompletas (tenant={has_tenant}, client={has_client}, secret={has_secret}). "
+                f"Comprueba '{sp_cfg.get('credentials_ini_path')}'."
+            )
 
         self.processors: Dict[str, BaseReportProcessor] = {}
         self._register_default_processors()
@@ -1009,16 +1039,19 @@ class ReportPipeline:
         transformed = processor.transform_data(raw_rows)
 
         # 3. Generación del archivo HTML interactivo
-        out_dir = self.cfg["reports"][report_key].get("local_output_dir", "./Outputs")
+        out_dir = self.cfg["reports"][report_key].get("local_output_dir", r"D:\Automaticos\Robots\Outputs")
         local_html_path = processor.generate_html_file(raw_rows, target_date, out_dir)
         file_name = os.path.basename(local_html_path)
 
         # 4. Subida a SharePoint
         sp_folder = self.cfg["sharepoint"].get("target_folder", "")
         if self.sp_client:
-            self.sp_client.upload_file(local_html_path, sp_folder)
+            try:
+                self.sp_client.upload_file(local_html_path, sp_folder)
+            except Exception as e:
+                logging.exception(f"Error durante la subida a SharePoint de '{file_name}': {e}")
         else:
-            logging.warning("Se omitió la subida a SharePoint por falta de cliente configurado.")
+            logging.warning("Se omitió la subida a SharePoint porque el cliente Graph no está disponible.")
 
         # Construcción de la URL de visualización en SharePoint
         web_template = self.cfg["sharepoint"].get("web_url_template", "")
@@ -1037,7 +1070,7 @@ class ReportPipeline:
                 cc=self.cfg["smtp"]["cc"]
             )
 
-        logging.info(f"=== PIPELINE FINALIZADO CON ÉXITO: {file_name} publicado en SharePoint ===")
+        logging.info(f"=== PIPELINE FINALIZADO CON ÉXITO: {file_name} ===")
 
 
 # ==============================================================================
@@ -1059,31 +1092,51 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main():
-    args = parse_arguments()
-    config_mgr = ConfigManager(args.config)
-    config_mgr.override_from_args(args)
-
-    # Configuración de Logging y creación de carpeta
-    log_cfg = config_mgr.config.get("logging", {})
-    log_dir = log_cfg.get("log_dir", r"D:\Automaticos\Logs\reports")
-    log_file = log_cfg.get("log_file", "report_automation.log")
-
+def init_logging(log_dir: str, log_file: str, level_name: str = "INFO") -> str:
+    """Configura el logging inmediatamente forzando handlers tanto a consola como a disco."""
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
         log_path = os.path.join(log_dir, log_file)
     else:
         log_path = log_file
 
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    stream_handler = logging.StreamHandler(sys.stdout)
+
     logging.basicConfig(
-        level=getattr(logging, log_cfg.get("level", "INFO")),
+        level=getattr(logging, level_name.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_path, encoding="utf-8")
-        ]
+        handlers=[stream_handler, file_handler],
+        force=True  # Garantiza reemplazar cualquier handler previo autogenerado
     )
-    logging.info(f"Logs inicializados en: {log_path}")
+    logging.info(f"Logging corporativo inicializado. Registrando en: '{log_path}'")
+    return log_path
+
+
+def main():
+    args = parse_arguments()
+
+    # Pre-cargar ruta de log para garantizar que el log se inicialice antes que cualquier otra clase
+    default_log_dir = r"D:\Automaticos\Logs\reports"
+    default_log_file = "report_automation.log"
+
+    # Si existe config.json, intentamos extraer log_dir antes de instanciar clases
+    if args.config and os.path.exists(args.config):
+        try:
+            with open(args.config, "r", encoding="utf-8") as f:
+                pre_cfg = json.load(f)
+                log_sec = pre_cfg.get("logging", {})
+                default_log_dir = log_sec.get("log_dir", default_log_dir)
+                default_log_file = log_sec.get("log_file", default_log_file)
+        except Exception:
+            pass
+
+    log_dir = args.log_dir or default_log_dir
+    init_logging(log_dir, default_log_file)
+
+    # Ahora instanciamos ConfigManager con logging ya activo
+    config_mgr = ConfigManager(args.config)
+    config_mgr.override_from_args(args)
 
     # Fecha objetivo (ayer por defecto)
     if args.date:
