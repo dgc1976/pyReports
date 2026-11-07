@@ -10,8 +10,8 @@ Capas:
   3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph con saneamiento de rutas.
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
-  6. IRReportProcessor: Especialización para IR, Resumen IR Segmentado, Entradas/Cierres D-8 a D-1,
-                        y Cuadro de Mando (CDM) detallado por Grupo, Contrata y Provincia.
+  6. IRReportProcessor: Especialización para IR, Resumen IR Segmentado, CDM por Actividad
+                        (Toda la Actividad, AyT Masivo, Migraciones, B2B) y CDM Provincial.
   7. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
   8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email compacto).
 
@@ -396,7 +396,7 @@ class BaseReportProcessor(ABC):
 
 
 # ==============================================================================
-# 6. IMPLEMENTACIÓN: REPORTE IR COMPACTO CON TABLAS CDM DETALLADAS
+# 6. IMPLEMENTACIÓN: REPORTE IR COMPACTO CON TODOS LOS CDMS DE LOOKER
 # ==============================================================================
 class IRReportProcessor(BaseReportProcessor):
     EXCLUDED_CONTRATAS = {"FOL", "ICONO", "NO_DEFINIDO", "OTROS", "SIN CONTRATA"}
@@ -428,6 +428,7 @@ class IRReportProcessor(BaseReportProcessor):
             *,
             -- Banderas de Segmentación Operativa de Looker
             CASE WHEN service_operation IN ('ALTA', 'TRASLADO', 'MIGRACION', 'SWAP', 'MIGRACION ACOMETIDA') THEN TRUE ELSE FALSE END AS Filtro_NORMALIZADO,
+            CASE WHEN service_operation NOT IN ('SWAP') THEN TRUE ELSE FALSE END AS Filtro_NoSwap,
             CASE WHEN service_operation IN ('ALTA', 'TRASLADO') AND activity_group = 'MASIVO' THEN TRUE ELSE FALSE END AS Filtro_AyTMasivo,
             CASE WHEN service_operation IN ('MIGRACION', 'MIGRACION ACOMETIDA') AND activity_group = 'MASIVO' THEN TRUE ELSE FALSE END AS Filtro_MigMasivo,
             CASE WHEN activity_group = 'B2B' THEN TRUE ELSE FALSE END AS Filtro_B2B,
@@ -436,7 +437,7 @@ class IRReportProcessor(BaseReportProcessor):
             CASE WHEN tipo = 'Real' THEN total_3_dias ELSE 0 END AS MediaRealizadas,
             CASE WHEN tipo = 'UltDiaReal' THEN total_3_dias ELSE 0 END AS RealUltDiaHabil,
 
-            -- Serie de Recibidas (Entradas D-8 a D-1)
+            -- Serie de Recibidas (D-8 a D-1)
             CASE WHEN dias_atras = 1 THEN total_is_ot_created ELSE 0 END AS Recibidas_D_1,
             CASE WHEN dias_atras = 2 THEN total_is_ot_created ELSE 0 END AS Recibidas_D_2,
             CASE WHEN dias_atras = 3 THEN total_is_ot_created ELSE 0 END AS Recibidas_D_3,
@@ -446,7 +447,7 @@ class IRReportProcessor(BaseReportProcessor):
             CASE WHEN dias_atras = 7 THEN total_is_ot_created ELSE 0 END AS Recibidas_D_7,
             CASE WHEN dias_atras = 8 THEN total_is_ot_created ELSE 0 END AS Recibidas_D_8,
 
-            -- Serie de Realizadas (Cierres D-8 a D-1)
+            -- Serie de Realizadas (D-8 a D-1)
             CASE WHEN dias_atras = 1 THEN total_is_ot_done ELSE 0 END AS Realizadas_D_1,
             CASE WHEN dias_atras = 2 THEN total_is_ot_done ELSE 0 END AS Realizadas_D_2,
             CASE WHEN dias_atras = 3 THEN total_is_ot_done ELSE 0 END AS Realizadas_D_3,
@@ -467,7 +468,7 @@ class IRReportProcessor(BaseReportProcessor):
           COALESCE(normalized_contracts, 'SIN CONTRATA') AS contrata,
           COALESCE(normalized_province, 'SIN PROVINCIA') AS provincia,
 
-          -- Totales de flujo y medias
+          -- Totales de flujo y medias generales
           ROUND(SUM(MediaRecibidas) / 3, 1) AS rec_media,
           MAX(max_ots) AS rec_max,
           MAX(Recibidas_D_8) AS rec_d8,
@@ -512,17 +513,137 @@ class IRReportProcessor(BaseReportProcessor):
           SUM(CASE WHEN Filtro_MigMasivo THEN total_bolsa ELSE 0 END) AS bolsa_mig,
           SUM(CASE WHEN Filtro_MigMasivo AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_mig,
           SUM(CASE WHEN Filtro_B2B THEN total_bolsa ELSE 0 END) AS bolsa_b2b,
-          SUM(CASE WHEN Filtro_B2B AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_b2b
+          SUM(CASE WHEN Filtro_B2B AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_b2b,
+
+          -- 1. CDM: Toda la Actividad (menos SWAP)
+          ROUND(SUM(CASE WHEN Filtro_NoSwap THEN MediaRecibidas ELSE 0 END) / 3, 1) AS rec_media_noswap,
+          MAX(CASE WHEN Filtro_NoSwap THEN max_ots ELSE 0 END) AS rec_max_noswap,
+          MAX(CASE WHEN Filtro_NoSwap THEN Recibidas_D_1 ELSE 0 END) AS rec_d1_noswap,
+          ROUND(SUM(CASE WHEN Filtro_NoSwap THEN MediaRealizadas ELSE 0 END) / 3, 1) AS rea_media_noswap,
+          MAX(CASE WHEN Filtro_NoSwap THEN max_ots ELSE 0 END) AS rea_max_noswap,
+          MAX(CASE WHEN Filtro_NoSwap THEN Realizadas_D_1 ELSE 0 END) AS rea_d1_noswap,
+          SUM(CASE WHEN Filtro_NoSwap THEN total_bolsa ELSE 0 END) AS bolsa_noswap,
+          SUM(CASE WHEN Filtro_NoSwap THEN total_citaD ELSE 0 END) AS citado_noswap,
+          SUM(CASE WHEN Filtro_NoSwap THEN total_citaD1 ELSE 0 END) AS citad1_noswap,
+          SUM(CASE WHEN Filtro_NoSwap THEN total_pdtecita ELSE 0 END) AS pdtecita_noswap,
+
+          -- 2. CDM: Altas y Traslados (Masivo)
+          ROUND(SUM(CASE WHEN Filtro_AyTMasivo THEN MediaRecibidas ELSE 0 END) / 3, 1) AS rec_media_ayt,
+          MAX(CASE WHEN Filtro_AyTMasivo THEN max_ots ELSE 0 END) AS rec_max_ayt,
+          MAX(CASE WHEN Filtro_AyTMasivo THEN Recibidas_D_1 ELSE 0 END) AS rec_d1_ayt,
+          ROUND(SUM(CASE WHEN Filtro_AyTMasivo THEN MediaRealizadas ELSE 0 END) / 3, 1) AS rea_media_ayt,
+          MAX(CASE WHEN Filtro_AyTMasivo THEN max_ots ELSE 0 END) AS rea_max_ayt,
+          MAX(CASE WHEN Filtro_AyTMasivo THEN Realizadas_D_1 ELSE 0 END) AS rea_d1_ayt,
+          SUM(CASE WHEN Filtro_AyTMasivo THEN total_bolsa ELSE 0 END) AS bolsa_ayt_cdm,
+          SUM(CASE WHEN Filtro_AyTMasivo THEN total_citaD ELSE 0 END) AS citado_ayt,
+          SUM(CASE WHEN Filtro_AyTMasivo THEN total_pdtecita ELSE 0 END) AS pdtecita_ayt,
+
+          -- 3. CDM: Solo Migraciones (Masivo)
+          ROUND(SUM(CASE WHEN Filtro_MigMasivo THEN MediaRecibidas ELSE 0 END) / 3, 1) AS rec_media_mig,
+          MAX(CASE WHEN Filtro_MigMasivo THEN max_ots ELSE 0 END) AS rec_max_mig,
+          MAX(CASE WHEN Filtro_MigMasivo THEN Recibidas_D_1 ELSE 0 END) AS rec_d1_mig,
+          ROUND(SUM(CASE WHEN Filtro_MigMasivo THEN MediaRealizadas ELSE 0 END) / 3, 1) AS rea_media_mig,
+          MAX(CASE WHEN Filtro_MigMasivo THEN max_ots ELSE 0 END) AS rea_max_mig,
+          MAX(CASE WHEN Filtro_MigMasivo THEN Realizadas_D_1 ELSE 0 END) AS rea_d1_mig,
+          SUM(CASE WHEN Filtro_MigMasivo THEN total_bolsa ELSE 0 END) AS bolsa_mig_cdm,
+          SUM(CASE WHEN Filtro_MigMasivo THEN total_citaD ELSE 0 END) AS citado_mig,
+          SUM(CASE WHEN Filtro_MigMasivo THEN total_pdtecita ELSE 0 END) AS pdtecita_mig,
+
+          -- 4. CDM: Solo B2B
+          ROUND(SUM(CASE WHEN Filtro_B2B THEN MediaRecibidas ELSE 0 END) / 3, 1) AS rec_media_b2b,
+          MAX(CASE WHEN Filtro_B2B THEN max_ots ELSE 0 END) AS rec_max_b2b,
+          MAX(CASE WHEN Filtro_B2B THEN Recibidas_D_1 ELSE 0 END) AS rec_d1_b2b,
+          ROUND(SUM(CASE WHEN Filtro_B2B THEN MediaRealizadas ELSE 0 END) / 3, 1) AS rea_media_b2b,
+          MAX(CASE WHEN Filtro_B2B THEN max_ots ELSE 0 END) AS rea_max_b2b,
+          MAX(CASE WHEN Filtro_B2B THEN Realizadas_D_1 ELSE 0 END) AS rea_d1_b2b,
+          SUM(CASE WHEN Filtro_B2B THEN total_bolsa ELSE 0 END) AS bolsa_b2b_cdm,
+          SUM(CASE WHEN Filtro_B2B THEN total_citaD ELSE 0 END) AS citado_b2b,
+          SUM(CASE WHEN Filtro_B2B THEN total_pdtecita ELSE 0 END) AS pdtecita_b2b
 
         FROM TOTAL_IR
         GROUP BY grupo, contrata, provincia
         ORDER BY grupo, contrata, provincia;
         """
 
+    def _build_segment_table(self, rows_by_contrata: Dict[str, Dict[str, Any]], key_prefix: str, use_citad1: bool = False) -> Dict[str, Any]:
+        """Construye una tabla CDM segmentada idéntica a las capturas de Looker Studio."""
+        items = {}
+        tot = {
+            "rec_media": 0.0, "rec_max": 0, "rec_d1": 0,
+            "rea_media": 0.0, "rea_max": 0, "rea_d1": 0,
+            "bolsa": 0, "citado": 0, "pdtecita": 0
+        }
+
+        for c, d in sorted(rows_by_contrata.items()):
+            rec_m = d[f"rec_media_{key_prefix}"]
+            rec_max = d[f"rec_max_{key_prefix}"]
+            rec_1 = d[f"rec_d1_{key_prefix}"]
+            rea_m = d[f"rea_media_{key_prefix}"]
+            rea_max = d[f"rea_max_{key_prefix}"]
+            rea_1 = d[f"rea_d1_{key_prefix}"]
+            b = d[f"bolsa_{key_prefix}"]
+            cit = d[f"citad1_{key_prefix}" if use_citad1 else f"citado_{key_prefix}"]
+            p_cita = d[f"pdtecita_{key_prefix}"]
+
+            tot["rec_media"] += rec_m
+            tot["rec_max"] = max(tot["rec_max"], rec_max)
+            tot["rec_d1"] += rec_1
+            tot["rea_media"] += rea_m
+            tot["rea_max"] = max(tot["rea_max"], rea_max)
+            tot["rea_d1"] += rea_1
+            tot["bolsa"] += b
+            tot["citado"] += cit
+            tot["pdtecita"] += p_cita
+
+            ir_3d = (b / rea_m) if rea_m > 0 else None
+            ir_ayer = (b / rea_1) if rea_1 > 0 else None
+            ir_prev = (b / cit) if cit > 0 else None
+            per_pdte = (100 * p_cita / b) if b > 0 else None
+
+            items[c] = {
+                "rec_media": self._fmt(round(rec_m)),
+                "rec_max": self._fmt(rec_max),
+                "rec_d1": self._fmt(rec_1),
+                "rea_media": self._fmt(round(rea_m)),
+                "rea_max": self._fmt(rea_max),
+                "rea_d1": self._fmt(rea_1),
+                "bolsa": self._fmt(b),
+                "ir_3d": self._fmt(ir_3d, 1),
+                "ir_ayer": self._fmt(ir_ayer, 1),
+                "ir_previsto": self._fmt(ir_prev, 2),
+                "pdtecita": self._fmt(p_cita),
+                "per_pdte_cita": f"{self._fmt(per_pdte, 1)}%" if per_pdte is not None else "-",
+                "cita_col": self._fmt(cit)
+            }
+
+        tot_ir_3d = (tot["bolsa"] / tot["rea_media"]) if tot["rea_media"] > 0 else 0
+        tot_ir_ayer = (tot["bolsa"] / tot["rea_d1"]) if tot["rea_d1"] > 0 else 0
+        tot_ir_prev = (tot["bolsa"] / tot["citado"]) if tot["citado"] > 0 else 0
+        tot_per_pdte = (100 * tot["pdtecita"] / tot["bolsa"]) if tot["bolsa"] > 0 else 0
+
+        total_row = {
+            "rec_media": self._fmt(round(tot["rec_media"])),
+            "rec_max": self._fmt(tot["rec_max"]),
+            "rec_d1": self._fmt(tot["rec_d1"]),
+            "rea_media": self._fmt(round(tot["rea_media"])),
+            "rea_max": self._fmt(tot["rea_max"]),
+            "rea_d1": self._fmt(tot["rea_d1"]),
+            "bolsa": self._fmt(tot["bolsa"]),
+            "ir_3d": self._fmt(tot_ir_3d, 1),
+            "ir_ayer": self._fmt(tot_ir_ayer, 1),
+            "ir_previsto": self._fmt(tot_ir_prev, 2),
+            "pdtecita": self._fmt(tot["pdtecita"]),
+            "per_pdte_cita": f"{self._fmt(tot_per_pdte, 1)}%",
+            "cita_col": self._fmt(tot["citado"])
+        }
+
+        return {"filas": items, "total": total_row}
+
     def transform_data(self, raw_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Calcula las estructuras completas de Looker Studio excluyendo contratas inactivas:
           - Elimina FOL, ICONO, NO_DEFINIDO, OTROS.
+          - Incorpora los nuevos CDMs segmentados (Toda la Actividad, AyT, Migraciones, B2B).
           - Incorpora la lista detallada CDM por Grupo Marcas, Contrata y Provincia.
         """
         ir_raw = {}
@@ -568,6 +689,9 @@ class IRReportProcessor(BaseReportProcessor):
             "rea_media": 0.0, "rea_max": 0, "rea_d1": 0,
             "bolsa": 0, "citad1": 0
         }
+
+        # Acumuladores de contratas para los CDMs segmentados
+        segment_contratas_raw = {}
 
         tot_bolsa_g = 0
         tot_rec_media_g = 0.0
@@ -652,6 +776,68 @@ class IRReportProcessor(BaseReportProcessor):
             tot_cdm["rea_d1"] += rea_1
             tot_cdm["bolsa"] += b
             tot_cdm["citad1"] += cit1
+
+            # Acumulador para CDMs Segmentados por Contrata
+            if c not in segment_contratas_raw:
+                segment_contratas_raw[c] = {
+                    "rec_media_noswap": 0.0, "rec_max_noswap": 0, "rec_d1_noswap": 0,
+                    "rea_media_noswap": 0.0, "rea_max_noswap": 0, "rea_d1_noswap": 0,
+                    "bolsa_noswap": 0, "citado_noswap": 0, "citad1_noswap": 0, "pdtecita_noswap": 0,
+
+                    "rec_media_ayt": 0.0, "rec_max_ayt": 0, "rec_d1_ayt": 0,
+                    "rea_media_ayt": 0.0, "rea_max_ayt": 0, "rea_d1_ayt": 0,
+                    "bolsa_ayt": 0, "citado_ayt": 0, "pdtecita_ayt": 0,
+
+                    "rec_media_mig": 0.0, "rec_max_mig": 0, "rec_d1_mig": 0,
+                    "rea_media_mig": 0.0, "rea_max_mig": 0, "rea_d1_mig": 0,
+                    "bolsa_mig": 0, "citado_mig": 0, "pdtecita_mig": 0,
+
+                    "rec_media_b2b": 0.0, "rec_max_b2b": 0, "rec_d1_b2b": 0,
+                    "rea_media_b2b": 0.0, "rea_max_b2b": 0, "rea_d1_b2b": 0,
+                    "bolsa_b2b": 0, "citado_b2b": 0, "pdtecita_b2b": 0
+                }
+
+            sc = segment_contratas_raw[c]
+            sc["rec_media_noswap"] += float(r.get("rec_media_noswap") or 0.0)
+            sc["rec_max_noswap"] = max(sc["rec_max_noswap"], int(r.get("rec_max_noswap") or 0))
+            sc["rec_d1_noswap"] += int(r.get("rec_d1_noswap") or 0)
+            sc["rea_media_noswap"] += float(r.get("rea_media_noswap") or 0.0)
+            sc["rea_max_noswap"] = max(sc["rea_max_noswap"], int(r.get("rea_max_noswap") or 0))
+            sc["rea_d1_noswap"] += int(r.get("rea_d1_noswap") or 0)
+            sc["bolsa_noswap"] += int(r.get("bolsa_noswap") or 0)
+            sc["citado_noswap"] += int(r.get("citado_noswap") or 0)
+            sc["citad1_noswap"] += int(r.get("citad1_noswap") or 0)
+            sc["pdtecita_noswap"] += int(r.get("pdtecita_noswap") or 0)
+
+            sc["rec_media_ayt"] += float(r.get("rec_media_ayt") or 0.0)
+            sc["rec_max_ayt"] = max(sc["rec_max_ayt"], int(r.get("rec_max_ayt") or 0))
+            sc["rec_d1_ayt"] += int(r.get("rec_d1_ayt") or 0)
+            sc["rea_media_ayt"] += float(r.get("rea_media_ayt") or 0.0)
+            sc["rea_max_ayt"] = max(sc["rea_max_ayt"], int(r.get("rea_max_ayt") or 0))
+            sc["rea_d1_ayt"] += int(r.get("rea_d1_ayt") or 0)
+            sc["bolsa_ayt"] += int(r.get("bolsa_ayt_cdm") or 0)
+            sc["citado_ayt"] += int(r.get("citado_ayt") or 0)
+            sc["pdtecita_ayt"] += int(r.get("pdtecita_ayt") or 0)
+
+            sc["rec_media_mig"] += float(r.get("rec_media_mig") or 0.0)
+            sc["rec_max_mig"] = max(sc["rec_max_mig"], int(r.get("rec_max_mig") or 0))
+            sc["rec_d1_mig"] += int(r.get("rec_d1_mig") or 0)
+            sc["rea_media_mig"] += float(r.get("rea_media_mig") or 0.0)
+            sc["rea_max_mig"] = max(sc["rea_max_mig"], int(r.get("rea_max_mig") or 0))
+            sc["rea_d1_mig"] += int(r.get("rea_d1_mig") or 0)
+            sc["bolsa_mig"] += int(r.get("bolsa_mig_cdm") or 0)
+            sc["citado_mig"] += int(r.get("citado_mig") or 0)
+            sc["pdtecita_mig"] += int(r.get("pdtecita_mig") or 0)
+
+            sc["rec_media_b2b"] += float(r.get("rec_media_b2b") or 0.0)
+            sc["rec_max_b2b"] = max(sc["rec_max_b2b"], int(r.get("rec_max_b2b") or 0))
+            sc["rec_d1_b2b"] += int(r.get("rec_d1_b2b") or 0)
+            sc["rea_media_b2b"] += float(r.get("rea_media_b2b") or 0.0)
+            sc["rea_max_b2b"] = max(sc["rea_max_b2b"], int(r.get("rea_max_b2b") or 0))
+            sc["rea_d1_b2b"] += int(r.get("rea_d1_b2b") or 0)
+            sc["bolsa_b2b"] += int(r.get("bolsa_b2b_cdm") or 0)
+            sc["citado_b2b"] += int(r.get("citado_b2b") or 0)
+            sc["pdtecita_b2b"] += int(r.get("pdtecita_b2b") or 0)
 
             # 1. Agrupación Resumen IR
             if c not in resumen_ir_raw:
@@ -800,6 +986,12 @@ class IRReportProcessor(BaseReportProcessor):
             "ir_ayer": self._fmt(tot_ir_ayer_cdm, 1),
             "citad1": self._fmt(tot_cdm["citad1"])
         }
+
+        # Construcción de los 4 CDMs Segmentados de Looker:
+        cdm_noswap = self._build_segment_table(segment_contratas_raw, "noswap", use_citad1=False)
+        cdm_ayt = self._build_segment_table(segment_contratas_raw, "ayt", use_citad1=False)
+        cdm_mig = self._build_segment_table(segment_contratas_raw, "mig", use_citad1=False)
+        cdm_b2b = self._build_segment_table(segment_contratas_raw, "b2b", use_citad1=False)
 
         # Formateo de la Tabla «Resumen IR»
         resumen_ir_contratas = {}
@@ -963,6 +1155,10 @@ class IRReportProcessor(BaseReportProcessor):
         return {
             "cdm_filas": cdm_filas,
             "total_cdm_resumen": total_cdm_resumen,
+            "cdm_noswap": cdm_noswap,
+            "cdm_ayt": cdm_ayt,
+            "cdm_mig": cdm_mig,
+            "cdm_b2b": cdm_b2b,
             "resumen_ir_contratas": resumen_ir_contratas,
             "total_resumen_ir": total_resumen_ir,
             "looker_ir_contratas": looker_ir_contratas,
@@ -1207,16 +1403,20 @@ class IRReportProcessor(BaseReportProcessor):
     ) -> str:
         """
         Renderiza el cuerpo HTML ultracompacto para el correo:
-          - Incorpora la nueva tabla CDM detallada por Grupo Marcas, Contrata y Provincia.
+          - Incluye los 4 Cuadros de Mando (CDM) segmentados de Looker:
+              1. Toda la Actividad (menos SWAP)
+              2. Altas y Traslados (Masivo)
+              3. Solo Migraciones (Masivo)
+              4. Solo B2B
+          - Incluye el Cuadro de Mando Detallado por Provincia.
           - Sin contratas inactivas (FOL, ICONO, NO_DEFINIDO, OTROS eliminadas).
-          - Padding y márgenes reducidos para eliminar espacios vacíos.
         """
         template_str = """
         <!DOCTYPE html>
         <html>
         <head><meta charset="utf-8"></head>
         <body style="margin: 0; padding: 8px; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1e293b; font-size: 11px;">
-          <!-- CABECERA PRINCIPAL CON LOGOTIPO COMPACTO DE ORANGE -->
+          <!-- CABECERA PRINCIPAL CON LOGOTIPO OFICIAL DE ORANGE -->
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px;">
             <tr>
               <td valign="middle">
@@ -1239,7 +1439,7 @@ class IRReportProcessor(BaseReportProcessor):
                         Informe Operativo: Entradas, Cierres e IR
                       </h2>
                       <p style="margin: 1px 0 0 0; font-size: 11px; color: #64748b;">
-                        Orange Operaciones — Seguimiento Diario de Producción y Calidad de Citas
+                        Orange Operaciones — Cuadro de Mando Ejecutivo y Seguimiento de Calidad
                       </p>
                     </td>
                   </tr>
@@ -1274,7 +1474,7 @@ class IRReportProcessor(BaseReportProcessor):
             </tr>
           </table>
 
-          <!-- TARJETAS RESUMEN KPI COMPACTAS -->
+          <!-- TARJETAS RESUMEN KPI -->
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 12px;">
             <tr>
               <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 3px solid #ff6600; border-radius: 6px; padding: 8px 10px;">
@@ -1303,7 +1503,7 @@ class IRReportProcessor(BaseReportProcessor):
             </tr>
           </table>
 
-          <!-- TABLA RESUMEN IR (SEGMENTADA NATIVA) -->
+          <!-- TABLA RESUMEN IR (SEGMENTADA) -->
           <div style="font-size: 13px; font-weight: 800; color: #ff5722; margin-bottom: 4px;">
             Resumen IR
           </div>
@@ -1336,6 +1536,250 @@ class IRReportProcessor(BaseReportProcessor):
                 <td style="padding: 6px 8px; font-weight: 900;">{{ total_resumen_ir.ir_ayt }}</td>
                 <td style="padding: 6px 8px; font-weight: 900;">{{ total_resumen_ir.ir_migraciones }}</td>
                 <td style="padding: 6px 8px; font-weight: 900;">{{ total_resumen_ir.ir_b2b }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- 1. CDM SEGMENTADO: TODA LA ACTIVIDAD (MENOS SWAP) -->
+          <div style="font-size: 13px; font-weight: 800; color: #ff5722; margin-bottom: 4px;">
+            IR - Toda la Actividad (menos SWAP)
+          </div>
+          <table width="100%" cellpadding="3" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 10px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
+            <thead>
+              <tr style="background-color: #ff5722; color: #ffffff;">
+                <th align="left" style="padding: 6px 6px; font-weight: 700;">Contrata &#9652;</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec Max</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec D-1</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real Max</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real D-1</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Bolsa</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR 3D</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR Ayer</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR Previsto</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Pdte Cita</th>
+                <th style="padding: 6px 5px; font-weight: 700;">%Pdte Cita</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Cita D</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for c, f in cdm_noswap.filas.items() %}
+              <tr style="border-bottom: 1px solid #f1f5f9;">
+                <td align="left" style="padding: 3px 6px; font-weight: 600; color: #0f172a;">{{ c }}</td>
+                <td style="padding: 3px 5px;">{{ f.rec_media }}</td>
+                <td style="padding: 3px 5px;">{{ f.rec_max }}</td>
+                <td style="padding: 3px 5px; font-weight: 600;">{{ f.rec_d1 }}</td>
+                <td style="padding: 3px 5px;">{{ f.rea_media }}</td>
+                <td style="padding: 3px 5px;">{{ f.rea_max }}</td>
+                <td style="padding: 3px 5px; font-weight: 600;">{{ f.rea_d1 }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #0f172a;">{{ f.bolsa }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #c2410c;">{{ f.ir_3d }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #0369a1;">{{ f.ir_ayer }}</td>
+                <td style="padding: 3px 5px;">{{ f.ir_previsto }}</td>
+                <td style="padding: 3px 5px;">{{ f.pdtecita }}</td>
+                <td style="padding: 3px 5px;">{{ f.per_pdte_cita }}</td>
+                <td style="padding: 3px 5px;">{{ f.cita_col }}</td>
+              </tr>
+              {% endfor %}
+              <tr style="background-color: #fff8f3; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
+                <td align="left" style="padding: 6px 6px;">Total</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.rec_media }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.rec_max }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.rec_d1 }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.rea_media }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.rea_max }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.rea_d1 }}</td>
+                <td style="padding: 6px 5px; font-weight: 900;">{{ cdm_noswap.total.bolsa }}</td>
+                <td style="padding: 6px 5px; font-weight: 900; color: #c2410c;">{{ cdm_noswap.total.ir_3d }}</td>
+                <td style="padding: 6px 5px; font-weight: 900; color: #0369a1;">{{ cdm_noswap.total.ir_ayer }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.ir_previsto }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.pdtecita }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.per_pdte_cita }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_noswap.total.cita_col }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- 2. CDM SEGMENTADO: ALTAS Y TRASLADOS (MASIVO) -->
+          <div style="font-size: 13px; font-weight: 800; color: #ff5722; margin-bottom: 4px;">
+            IR - Altas y Traslados (Masivo)
+          </div>
+          <table width="100%" cellpadding="3" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 10px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
+            <thead>
+              <tr style="background-color: #ff5722; color: #ffffff;">
+                <th align="left" style="padding: 6px 6px; font-weight: 700;">Contrata &#9652;</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec Max</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec D-1</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real Max</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real D-1</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Bolsa</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR 3D</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR Ayer</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR Previsto</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Pdte Cita</th>
+                <th style="padding: 6px 5px; font-weight: 700;">%Pdte Cita</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Cita D</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for c, f in cdm_ayt.filas.items() %}
+              <tr style="border-bottom: 1px solid #f1f5f9;">
+                <td align="left" style="padding: 3px 6px; font-weight: 600; color: #0f172a;">{{ c }}</td>
+                <td style="padding: 3px 5px;">{{ f.rec_media }}</td>
+                <td style="padding: 3px 5px;">{{ f.rec_max }}</td>
+                <td style="padding: 3px 5px; font-weight: 600;">{{ f.rec_d1 }}</td>
+                <td style="padding: 3px 5px;">{{ f.rea_media }}</td>
+                <td style="padding: 3px 5px;">{{ f.rea_max }}</td>
+                <td style="padding: 3px 5px; font-weight: 600;">{{ f.rea_d1 }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #0f172a;">{{ f.bolsa }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #c2410c;">{{ f.ir_3d }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #0369a1;">{{ f.ir_ayer }}</td>
+                <td style="padding: 3px 5px;">{{ f.ir_previsto }}</td>
+                <td style="padding: 3px 5px;">{{ f.pdtecita }}</td>
+                <td style="padding: 3px 5px;">{{ f.per_pdte_cita }}</td>
+                <td style="padding: 3px 5px;">{{ f.cita_col }}</td>
+              </tr>
+              {% endfor %}
+              <tr style="background-color: #fff8f3; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
+                <td align="left" style="padding: 6px 6px;">Total</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.rec_media }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.rec_max }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.rec_d1 }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.rea_media }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.rea_max }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.rea_d1 }}</td>
+                <td style="padding: 6px 5px; font-weight: 900;">{{ cdm_ayt.total.bolsa }}</td>
+                <td style="padding: 6px 5px; font-weight: 900; color: #c2410c;">{{ cdm_ayt.total.ir_3d }}</td>
+                <td style="padding: 6px 5px; font-weight: 900; color: #0369a1;">{{ cdm_ayt.total.ir_ayer }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.ir_previsto }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.pdtecita }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.per_pdte_cita }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_ayt.total.cita_col }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- 3. CDM SEGMENTADO: SOLO MIGRACIONES (MASIVO) -->
+          <div style="font-size: 13px; font-weight: 800; color: #ff5722; margin-bottom: 4px;">
+            IR - Solo Migraciones (Masivo)
+          </div>
+          <table width="100%" cellpadding="3" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 10px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
+            <thead>
+              <tr style="background-color: #ff5722; color: #ffffff;">
+                <th align="left" style="padding: 6px 6px; font-weight: 700;">Contrata &#9652;</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec Max</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec D-1</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real Max</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real D-1</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Bolsa</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR 3D</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR Ayer</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR Previsto</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Pdte Cita</th>
+                <th style="padding: 6px 5px; font-weight: 700;">%Pdte Cita</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Cita D</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for c, f in cdm_mig.filas.items() %}
+              <tr style="border-bottom: 1px solid #f1f5f9;">
+                <td align="left" style="padding: 3px 6px; font-weight: 600; color: #0f172a;">{{ c }}</td>
+                <td style="padding: 3px 5px;">{{ f.rec_media }}</td>
+                <td style="padding: 3px 5px;">{{ f.rec_max }}</td>
+                <td style="padding: 3px 5px; font-weight: 600;">{{ f.rec_d1 }}</td>
+                <td style="padding: 3px 5px;">{{ f.rea_media }}</td>
+                <td style="padding: 3px 5px;">{{ f.rea_max }}</td>
+                <td style="padding: 3px 5px; font-weight: 600;">{{ f.rea_d1 }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #0f172a;">{{ f.bolsa }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #c2410c;">{{ f.ir_3d }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #0369a1;">{{ f.ir_ayer }}</td>
+                <td style="padding: 3px 5px;">{{ f.ir_previsto }}</td>
+                <td style="padding: 3px 5px;">{{ f.pdtecita }}</td>
+                <td style="padding: 3px 5px;">{{ f.per_pdte_cita }}</td>
+                <td style="padding: 3px 5px;">{{ f.cita_col }}</td>
+              </tr>
+              {% endfor %}
+              <tr style="background-color: #fff8f3; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
+                <td align="left" style="padding: 6px 6px;">Total</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.rec_media }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.rec_max }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.rec_d1 }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.rea_media }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.rea_max }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.rea_d1 }}</td>
+                <td style="padding: 6px 5px; font-weight: 900;">{{ cdm_mig.total.bolsa }}</td>
+                <td style="padding: 6px 5px; font-weight: 900; color: #c2410c;">{{ cdm_mig.total.ir_3d }}</td>
+                <td style="padding: 6px 5px; font-weight: 900; color: #0369a1;">{{ cdm_mig.total.ir_ayer }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.ir_previsto }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.pdtecita }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.per_pdte_cita }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_mig.total.cita_col }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- 4. CDM SEGMENTADO: SOLO B2B -->
+          <div style="font-size: 13px; font-weight: 800; color: #ff5722; margin-bottom: 4px;">
+            IR - Solo B2B
+          </div>
+          <table width="100%" cellpadding="3" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 10px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
+            <thead>
+              <tr style="background-color: #ff5722; color: #ffffff;">
+                <th align="left" style="padding: 6px 6px; font-weight: 700;">Contrata &#9652;</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec Max</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Rec D-1</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real Max</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Real D-1</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Bolsa</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR 3D</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR Ayer</th>
+                <th style="padding: 6px 5px; font-weight: 700;">IR Previsto</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Pdte Cita</th>
+                <th style="padding: 6px 5px; font-weight: 700;">%Pdte Cita</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Cita D</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for c, f in cdm_b2b.filas.items() %}
+              <tr style="border-bottom: 1px solid #f1f5f9;">
+                <td align="left" style="padding: 3px 6px; font-weight: 600; color: #0f172a;">{{ c }}</td>
+                <td style="padding: 3px 5px;">{{ f.rec_media }}</td>
+                <td style="padding: 3px 5px;">{{ f.rec_max }}</td>
+                <td style="padding: 3px 5px; font-weight: 600;">{{ f.rec_d1 }}</td>
+                <td style="padding: 3px 5px;">{{ f.rea_media }}</td>
+                <td style="padding: 3px 5px;">{{ f.rea_max }}</td>
+                <td style="padding: 3px 5px; font-weight: 600;">{{ f.rea_d1 }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #0f172a;">{{ f.bolsa }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #c2410c;">{{ f.ir_3d }}</td>
+                <td style="padding: 3px 5px; font-weight: 700; color: #0369a1;">{{ f.ir_ayer }}</td>
+                <td style="padding: 3px 5px;">{{ f.ir_previsto }}</td>
+                <td style="padding: 3px 5px;">{{ f.pdtecita }}</td>
+                <td style="padding: 3px 5px;">{{ f.per_pdte_cita }}</td>
+                <td style="padding: 3px 5px;">{{ f.cita_col }}</td>
+              </tr>
+              {% endfor %}
+              <tr style="background-color: #fff8f3; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
+                <td align="left" style="padding: 6px 6px;">Total</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.rec_media }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.rec_max }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.rec_d1 }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.rea_media }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.rea_max }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.rea_d1 }}</td>
+                <td style="padding: 6px 5px; font-weight: 900;">{{ cdm_b2b.total.bolsa }}</td>
+                <td style="padding: 6px 5px; font-weight: 900; color: #c2410c;">{{ cdm_b2b.total.ir_3d }}</td>
+                <td style="padding: 6px 5px; font-weight: 900; color: #0369a1;">{{ cdm_b2b.total.ir_ayer }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.ir_previsto }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.pdtecita }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.per_pdte_cita }}</td>
+                <td style="padding: 6px 5px;">{{ cdm_b2b.total.cita_col }}</td>
               </tr>
             </tbody>
           </table>
@@ -1396,9 +1840,9 @@ class IRReportProcessor(BaseReportProcessor):
             </tbody>
           </table>
 
-          <!-- TABLA 1: CUADRO DE MANDO IR -->
+          <!-- TABLA 1: CUADRO DE MANDO IR GENERAL -->
           <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
-            1. Cuadro de Mando IR (Índice de Rotación por Contrata)
+            Cuadro de Mando IR (Índice de Rotación por Contrata)
           </div>
           <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
@@ -1456,7 +1900,7 @@ class IRReportProcessor(BaseReportProcessor):
 
           <!-- TABLA 2: ENTRADAS (D-8 A D-1) -->
           <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
-            2. Entradas (Evolución Diaria de Recibidas D-8 a D-1 por Contrata)
+            Entradas (Evolución Diaria de Recibidas D-8 a D-1 por Contrata)
           </div>
           <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
@@ -1508,7 +1952,7 @@ class IRReportProcessor(BaseReportProcessor):
 
           <!-- TABLA 3: CIERRES (D-8 A D-1) -->
           <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
-            3. Cierres (Evolución Diaria de Realizadas D-8 a D-1 por Contrata)
+            Cierres (Evolución Diaria de Realizadas D-8 a D-1 por Contrata)
           </div>
           <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
@@ -1560,7 +2004,7 @@ class IRReportProcessor(BaseReportProcessor):
 
           <!-- TABLA 4: ESTADO DE CITAS Y CALIDAD -->
           <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
-            4. Estado de Citas, Capacidad y Calidad de Bolsa por Contrata
+            Estado de Citas, Capacidad y Calidad de Bolsa por Contrata
           </div>
           <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
@@ -1606,7 +2050,7 @@ class IRReportProcessor(BaseReportProcessor):
 
           <!-- TABLA 5: RESUMEN GRUPOS DE MARCAS -->
           <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
-            5. Resumen Consolidado por Grupo de Marcas (Stock, Citas y Pospuesto)
+            Resumen Consolidado por Grupo de Marcas (Stock, Citas y Pospuesto)
           </div>
           <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 12px; border-collapse: collapse;">
             <thead>
@@ -1675,6 +2119,10 @@ class IRReportProcessor(BaseReportProcessor):
             fecha_ayer_formateada=target_date.strftime("%d/%m/%Y"),
             cdm_filas=transformed_data["cdm_filas"],
             total_cdm_resumen=transformed_data["total_cdm_resumen"],
+            cdm_noswap=transformed_data["cdm_noswap"],
+            cdm_ayt=transformed_data["cdm_ayt"],
+            cdm_mig=transformed_data["cdm_mig"],
+            cdm_b2b=transformed_data["cdm_b2b"],
             resumen_ir_contratas=transformed_data["resumen_ir_contratas"],
             total_resumen_ir=transformed_data["total_resumen_ir"],
             looker_ir_contratas=transformed_data["looker_ir_contratas"],
@@ -1731,7 +2179,7 @@ class SMTPEmailSender:
                     logging.info("Negociando STARTTLS...")
                     smtp.starttls()
                 smtp.send_message(msg, from_addr=self.sender, to_addrs=to_addrs)
-                logging.info("¡Correo con Cuadro de Mando (CDM) y tablas de Looker enviado exitosamente!")
+                logging.info("¡Correo con Cuadros de Mando (CDM) y tablas de Looker enviado exitosamente!")
         except Exception as e:
             logging.error(f"Error al enviar mensaje por SMTP: {e}")
             raise
@@ -1794,11 +2242,11 @@ class ReportPipeline:
 
         logging.info(f"=== INICIANDO PIPELINE: {report_key.upper()} (Fecha objetivo: {target_date}) ===")
 
-        # 1. Extracción BigQuery con cálculo simultáneo de Resumen IR, flujo y CDM detallado
+        # 1. Extracción BigQuery con cálculo simultáneo de todos los CDMs y segmentaciones
         query = processor.build_query(target_date)
         raw_rows = self.extractor.execute_query(query)
 
-        # 2. Transformación de datos para construir CDM detallado y tablas de Looker
+        # 2. Transformación de datos para construir CDMs y tablas de Looker
         transformed = processor.transform_data(raw_rows)
 
         # 3. Generación del archivo HTML interactivo en disco con logo oficial de Orange
@@ -1829,7 +2277,7 @@ class ReportPipeline:
             web_template = self.cfg["sharepoint"].get("web_url_template", "")
             sharepoint_web_url = web_template.format(file_name=file_name)
 
-        # 5. Envío de correo con el CDM detallado y tablas de Looker embebidas en el cuerpo
+        # 5. Envío de correo con los 4 CDMs segmentados y el CDM provincial embebidos en el cuerpo
         if skip_email:
             logging.info("Opción --no-email activada. Se omite el envío por SMTP.")
         else:
