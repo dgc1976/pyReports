@@ -7,7 +7,7 @@
     "credentials_ini_path": "D:\\Automaticos\\Talend\\Sharepoint\\config.ini",
     "host": "orangees.sharepoint.com",
     "site_name": "TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE",
-    "target_folder": "Extraciones Datos Informes/Informes",
+    "target_folder": "Documentos/Extraciones Datos Informes/Informes",
     "web_url_template": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/Informes/{file_name}?web=1"
   },
   "smtp": {

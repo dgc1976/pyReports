@@ -7,7 +7,7 @@ Diseño: Programación Orientada a Objetos (POO) & Arquitectura Modular por Capa
 Capas:
   1. Setup & Logging: Configuración prioritaria con FileHandler en D:\Automaticos\Logs\reports.
   2. ConfigManager: Carga configuración JSON y lee credenciales de config.ini (Talend).
-  3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph para SharePoint.
+  3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph con saneamiento de rutas.
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
   6. IRReportProcessor: Especialización para IR, Entradas/Cierres y generación de HTML.
@@ -43,12 +43,19 @@ from jinja2 import Template
 # 1. UTILIDADES Y REINTENTOS PARA SHAREPOINT / HTTP
 # ==============================================================================
 def normalize_path(p: str) -> str:
+    """Normaliza barras y limpia nombres de biblioteca duplicados."""
     if not p:
         return ""
     p = p.replace("\\", "/").strip("/")
     while "//" in p:
         p = p.replace("//", "/")
-    return p
+    
+    # Si la ruta comienza por el nombre de la biblioteca por defecto, se elimina
+    # ya que /drive/root en Microsoft Graph ya apunta a la raíz de la biblioteca.
+    partes = p.split("/")
+    if partes and partes[0].lower() in ("documentos compartidos", "shared documents", "documentos"):
+        partes = partes[1:]
+    return "/".join(partes)
 
 
 def encode_path_segments(p: str) -> str:
@@ -155,21 +162,24 @@ class SharePointClient:
         })
 
     def build_url(self, folder: str = "", file_name: Optional[str] = None, suffix: str = "") -> str:
-        path = build_root_item_path(folder, file_name)
+        clean_folder = normalize_path(folder)
+        path = build_root_item_path(clean_folder, file_name)
         if path == ":":
             return f"https://graph.microsoft.com/v1.0/sites/{self.site_id}/drive/root{suffix}"
         return f"https://graph.microsoft.com/v1.0/sites/{self.site_id}/drive/root:{path}{suffix}"
 
     def upload_file(self, local_file_path: str, target_folder: str) -> str:
-        """Sube un archivo a SharePoint utilizando upload_small o sesión de subida."""
+        """Sube un archivo a SharePoint y devuelve la webUrl directa generada."""
         self.refresh_headers()
         file_name = os.path.basename(local_file_path)
         file_size = os.path.getsize(local_file_path)
-        logging.info(f"Iniciando subida a SharePoint de '{file_name}' ({file_size:,} bytes) en carpeta '{target_folder}'...")
+        clean_folder = normalize_path(target_folder)
+        logging.info(f"Iniciando subida a SharePoint de '{file_name}' ({file_size:,} bytes) en carpeta '{clean_folder}'...")
 
+        web_url = None
         if file_size > 4 * 1024 * 1024:
-            # Subida por bloques para archivos grandes (> 4MB)
-            url = self.build_url(target_folder, file_name, "/createUploadSession")
+            # Subida por bloques (> 4MB)
+            url = self.build_url(clean_folder, file_name, "/createUploadSession")
             resp = with_retries(
                 self.session, "POST", url,
                 json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
@@ -194,26 +204,28 @@ class SharePointClient:
                     upload_resp.raise_for_status()
                     bytes_uploaded += len(chunk)
                     logging.info(f"Progreso subida: {bytes_uploaded:,}/{file_size:,} bytes ({(bytes_uploaded / file_size) * 100:.1f}%)")
+                    if bytes_uploaded >= file_size:
+                        web_url = upload_resp.json().get("webUrl")
         else:
             # Subida directa en una sola petición (< 4MB)
-            url = self.build_url(target_folder, file_name, "/content")
+            url = self.build_url(clean_folder, file_name, "/content")
             with open(local_file_path, "rb") as f:
                 data = f.read()
             resp = with_retries(self.session, "PUT", url, data=data, timeout=45)
             resp.raise_for_status()
+            web_url = resp.json().get("webUrl")
 
         logging.info(f"¡Archivo '{file_name}' subido exitosamente a SharePoint!")
-        return file_name
+        if web_url:
+            logging.info(f"URL de acceso directo en SharePoint: {web_url}")
+        return web_url or ""
 
 
 # ==============================================================================
 # 3. GESTOR DE CONFIGURACIÓN (CON CARGA DESDE CONFIG.INI)
 # ==============================================================================
 class ConfigManager:
-    """
-    Gestiona la configuración combinando defaults, fichero JSON,
-    fichero externo config.ini (Talend) y argumentos CLI.
-    """
+    """Gestiona la configuración combinando defaults, config.json y config.ini."""
 
     DEFAULT_CONFIG = {
         "bigquery": {
@@ -227,7 +239,7 @@ class ConfigManager:
             "client_secret": "",
             "host": "orangees.sharepoint.com",
             "site_name": "TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE",
-            "target_folder": "Documentos compartidos/Documentos/Extraciones Datos Informes/Informes",
+            "target_folder": "Documentos/Extraciones Datos Informes/Informes",
             "web_url_template": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/Informes/{file_name}?web=1"
         },
         "smtp": {
@@ -255,7 +267,6 @@ class ConfigManager:
     def __init__(self, config_path: Optional[str] = None):
         self.config = json.loads(json.dumps(self.DEFAULT_CONFIG))
 
-        # 1. Cargar fichero JSON si existe
         if config_path and os.path.exists(config_path):
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
@@ -265,7 +276,6 @@ class ConfigManager:
             except Exception as e:
                 logging.error(f"Error al leer '{config_path}': {e}")
 
-        # 2. Cargar credenciales desde D:\Automaticos\Talend\Sharepoint\config.ini
         self._load_credentials_from_ini()
 
     def _deep_update(self, base: dict, update: dict):
@@ -284,7 +294,6 @@ class ConfigManager:
                 ini_parser = configparser.ConfigParser()
                 ini_parser.read(ini_path, encoding="utf-8")
 
-                # Búsqueda insensible a mayúsculas/minúsculas de la sección
                 target_section = None
                 for s in ini_parser.sections():
                     if s.lower() in ("general", "sharepoint", "default"):
@@ -307,14 +316,11 @@ class ConfigManager:
                         elif k_lower in ("site", "site_name") and clean_val:
                             self.config["sharepoint"]["site_name"] = clean_val
 
-                    # Validar si las 3 claves esenciales están presentes
                     sp_c = self.config["sharepoint"]
                     if sp_c.get("tenant_id") and sp_c.get("client_id") and sp_c.get("client_secret"):
                         logging.info("Credenciales de SharePoint cargadas exitosamente desde config.ini.")
                     else:
                         logging.warning("Faltan campos obligatorios (tenant_id/client_id/client_secret) en config.ini.")
-                else:
-                    logging.warning(f"No se encontró ninguna sección válida en '{ini_path}' (secciones detectadas: {ini_parser.sections()})")
             except Exception as e:
                 logging.error(f"Error al parsear '{ini_path}': {e}")
         else:
@@ -375,7 +381,6 @@ class BaseReportProcessor(ABC):
 
     @abstractmethod
     def generate_html_file(self, raw_rows: List[Dict[str, Any]], target_date: date, output_dir: str) -> str:
-        """Crea el archivo HTML en disco y devuelve su ruta local."""
         pass
 
     @abstractmethod
@@ -957,7 +962,6 @@ class SMTPEmailSender:
         msg["Subject"] = subject
         msg.attach(MIMEText(body_html, "html", "utf-8"))
 
-        # Deduplicamos direcciones para evitar bloqueos de sobre SMTP
         to_addrs = list(set([e.strip() for e in (recipients + cc) if e.strip()]))
         logging.info(f"Conectando al relay SMTP {self.server}:{self.port}...")
 
@@ -989,7 +993,6 @@ class ReportPipeline:
             use_tls=self.cfg["smtp"]["use_tls"]
         )
 
-        # Inicialización del cliente SharePoint con credenciales cargadas de config.ini
         sp_cfg = self.cfg["sharepoint"]
         self.sp_client = None
         has_tenant = bool(sp_cfg.get("tenant_id"))
@@ -1038,26 +1041,30 @@ class ReportPipeline:
         # 2. Transformación de datos para el cuerpo del correo
         transformed = processor.transform_data(raw_rows)
 
-        # 3. Generación del archivo HTML interactivo
+        # 3. Generación del archivo HTML interactivo en disco
         out_dir = self.cfg["reports"][report_key].get("local_output_dir", r"D:\Automaticos\Robots\Outputs")
         local_html_path = processor.generate_html_file(raw_rows, target_date, out_dir)
         file_name = os.path.basename(local_html_path)
 
-        # 4. Subida a SharePoint
-        sp_folder = self.cfg["sharepoint"].get("target_folder", "")
+        # 4. Subida a SharePoint y captura de webUrl directa
+        sp_folder = self.cfg["sharepoint"].get("target_folder", "Documentos/Extraciones Datos Informes/Informes")
+        uploaded_url = None
         if self.sp_client:
             try:
-                self.sp_client.upload_file(local_html_path, sp_folder)
+                uploaded_url = self.sp_client.upload_file(local_html_path, sp_folder)
             except Exception as e:
                 logging.exception(f"Error durante la subida a SharePoint de '{file_name}': {e}")
         else:
             logging.warning("Se omitió la subida a SharePoint porque el cliente Graph no está disponible.")
 
-        # Construcción de la URL de visualización en SharePoint
-        web_template = self.cfg["sharepoint"].get("web_url_template", "")
-        sharepoint_web_url = web_template.format(file_name=file_name)
+        # Si Graph devolvió la webUrl directa, la usamos; en caso contrario, usamos la plantilla
+        if uploaded_url:
+            sharepoint_web_url = uploaded_url
+        else:
+            web_template = self.cfg["sharepoint"].get("web_url_template", "")
+            sharepoint_web_url = web_template.format(file_name=file_name)
 
-        # 5. Envío de correo informativo (sin adjuntos bloqueables)
+        # 5. Envío de correo informativo (sin adjuntos)
         if skip_email:
             logging.info("Opción --no-email activada. Se omite el envío por SMTP.")
         else:
@@ -1107,7 +1114,7 @@ def init_logging(log_dir: str, log_file: str, level_name: str = "INFO") -> str:
         level=getattr(logging, level_name.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[stream_handler, file_handler],
-        force=True  # Garantiza reemplazar cualquier handler previo autogenerado
+        force=True
     )
     logging.info(f"Logging corporativo inicializado. Registrando en: '{log_path}'")
     return log_path
@@ -1116,11 +1123,9 @@ def init_logging(log_dir: str, log_file: str, level_name: str = "INFO") -> str:
 def main():
     args = parse_arguments()
 
-    # Pre-cargar ruta de log para garantizar que el log se inicialice antes que cualquier otra clase
     default_log_dir = r"D:\Automaticos\Logs\reports"
     default_log_file = "report_automation.log"
 
-    # Si existe config.json, intentamos extraer log_dir antes de instanciar clases
     if args.config and os.path.exists(args.config):
         try:
             with open(args.config, "r", encoding="utf-8") as f:
@@ -1134,17 +1139,14 @@ def main():
     log_dir = args.log_dir or default_log_dir
     init_logging(log_dir, default_log_file)
 
-    # Ahora instanciamos ConfigManager con logging ya activo
     config_mgr = ConfigManager(args.config)
     config_mgr.override_from_args(args)
 
-    # Fecha objetivo (ayer por defecto)
     if args.date:
         target_date = date.fromisoformat(args.date)
     else:
         target_date = date.today() - timedelta(days=1)
 
-    # Ejecución del pipeline
     pipeline = ReportPipeline(config_mgr)
     pipeline.run(report_key=args.report, target_date=target_date, skip_email=args.no_email)
 
