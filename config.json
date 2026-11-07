@@ -1,0 +1,29 @@
+{
+  "bigquery": {
+    "project_id": "mo-provision-reporting",
+    "dataset_table_ir": "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod"
+  },
+  "smtp": {
+    "server": "fsp.si.orange.es",
+    "port": 587,
+    "use_tls": false,
+    "sender": "noreply@es.orange.com",
+    "recipients": [
+      "david.gonzalezc@masorange.es"
+    ],
+    "cc": [
+      "david.gonzalezc@masorange.es"
+    ]
+  },
+  "reports": {
+    "ir": {
+      "subject_prefix": "Informe Diario Entradas y Cierres / IR",
+      "attachment_extension": ".txt",
+      "enabled": true
+    }
+  },
+  "logging": {
+    "level": "INFO",
+    "log_file": "report_automation.log"
+  }
+}
