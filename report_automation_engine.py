@@ -5,7 +5,7 @@ Framework de Automatización de Reportes Operativos - MASORANGE
 Diseño: Programación Orientada a Objetos (POO) & Arquitectura Modular por Capas.
 
 Capas:
-  1. Setup & Logging: Configuración prioritaria con FileHandler en D:\Automaticos\Logs\reports.
+  1. Setup & Logging: Configuración prioritaria con FileHandler en D:\\Automaticos\\Logs\\reports.
   2. ConfigManager: Carga configuración JSON y lee credenciales de config.ini (Talend).
   3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph con saneamiento de rutas.
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
@@ -46,7 +46,7 @@ def normalize_path(p: str) -> str:
     """
     Normaliza barras y elimina únicamente el prefijo de la biblioteca raíz
     ('Documentos compartidos' o 'Shared Documents') si viene incluido,
-    respetando subcarpetas reales como 'Documentos/Extraciones...'.
+    respetando subcarpetas reales como 'Documentos/Extraciones.../IR'.
     """
     if not p:
         return ""
@@ -241,8 +241,8 @@ class ConfigManager:
             "client_secret": "",
             "host": "orangees.sharepoint.com",
             "site_name": "TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE",
-            "target_folder": "Documentos/Extraciones Datos Informes/Informes",
-            "web_url_template": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/Informes/{file_name}?csf=1&web=1"
+            "target_folder": "Documentos/Extraciones Datos Informes/Informes/IR",
+            "web_url_template": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/Informes/IR/{file_name}?csf=1&web=1"
         },
         "smtp": {
             "server": "fsp.si.orange.es",
@@ -256,7 +256,7 @@ class ConfigManager:
             "ir": {
                 "subject_prefix": "Informe Diario Entradas y Cierres / IR",
                 "send_attachment": False,
-                "local_output_dir": r"D:\Automaticos\Robots\Outputs"
+                "local_output_dir": r"D:\Automaticos\Extraciones Datos Informes\Informes\IR"
             }
         },
         "logging": {
@@ -335,6 +335,8 @@ class ConfigManager:
             self.config["smtp"]["cc"] = [e.strip() for e in args.cc.split(",")]
         if getattr(args, "log_dir", None):
             self.config["logging"]["log_dir"] = args.log_dir
+        if getattr(args, "local_dir", None):
+            self.config["reports"]["ir"]["local_output_dir"] = args.local_dir
         if getattr(args, "sp_folder", None):
             self.config["sharepoint"]["target_folder"] = args.sp_folder
         if getattr(args, "sp_ini", None):
@@ -1043,13 +1045,19 @@ class ReportPipeline:
         # 2. Transformación de datos para el cuerpo del correo
         transformed = processor.transform_data(raw_rows)
 
-        # 3. Generación del archivo HTML interactivo en disco
-        out_dir = self.cfg["reports"][report_key].get("local_output_dir", r"D:\Automaticos\Robots\Outputs")
+        # 3. Generación del archivo HTML interactivo en disco (nueva ruta local)
+        out_dir = self.cfg["reports"][report_key].get(
+            "local_output_dir",
+            r"D:\Automaticos\Extraciones Datos Informes\Informes\IR"
+        )
         local_html_path = processor.generate_html_file(raw_rows, target_date, out_dir)
         file_name = os.path.basename(local_html_path)
 
-        # 4. Subida a SharePoint y captura de webUrl directa
-        sp_folder = self.cfg["sharepoint"].get("target_folder", "Documentos/Extraciones Datos Informes/Informes")
+        # 4. Subida a SharePoint y captura de webUrl directa (nueva subcarpeta /IR)
+        sp_folder = self.cfg["sharepoint"].get(
+            "target_folder",
+            "Documentos/Extraciones Datos Informes/Informes/IR"
+        )
         uploaded_url = None
         if self.sp_client:
             try:
@@ -1095,6 +1103,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--to", default=None, help="Destinatarios separados por coma")
     parser.add_argument("--cc", default=None, help="Copias separadas por coma")
     parser.add_argument("--log-dir", default=None, help="Directorio de logs")
+    parser.add_argument("--local-dir", default=None, help="Directorio local de salida HTML")
     parser.add_argument("--sp-folder", default=None, help="Carpeta destino en SharePoint")
     parser.add_argument("--sp-ini", default=None, help="Ruta al archivo config.ini de SharePoint (Talend)")
     parser.add_argument("--no-email", action="store_true", help="Generar y subir a SharePoint sin enviar correo")
