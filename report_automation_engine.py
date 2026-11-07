@@ -10,8 +10,8 @@ Capas:
   3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph con saneamiento de rutas.
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
-  6. IRReportProcessor: Especialización para IR, Entradas/Cierres con granularidad completa
-     (provincia, actividad, operación, marca, CP, técnico, huella, FTTH y zona polar).
+  6. IRReportProcessor: Especialización para IR, Entradas/Cierres con granularidad operativa
+     (provincia, actividad, operación, marca, huella, FTTH y zona polar).
   7. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
   8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email).
 
@@ -456,9 +456,6 @@ class IRReportProcessor(BaseReportProcessor):
           COALESCE(activity_group, '-') AS activity_group,
           COALESCE(service_operation, '-') AS service_operation,
           COALESCE(normalized_brand, '-') AS marca,
-          COALESCE(zip_code, '-') AS zip_code,
-          COALESCE(technician, '-') AS technician,
-          COALESCE(technician_name, '-') AS technician_name,
           COALESCE(footprint, '-') AS footprint,
           COALESCE(ftth_type, '-') AS ftth_type,
           COALESCE(polar_zone, '-') AS polar_zone,
@@ -501,7 +498,7 @@ class IRReportProcessor(BaseReportProcessor):
         FROM TOTAL_IR
         GROUP BY 
           grupo, contrata, provincia, activity_group, service_operation, marca,
-          zip_code, technician, technician_name, footprint, ftth_type, polar_zone
+          footprint, ftth_type, polar_zone
         ORDER BY grupo, contrata, provincia, activity_group, service_operation;
         """
 
@@ -676,8 +673,8 @@ class IRReportProcessor(BaseReportProcessor):
       <select id="selPolarZone" onchange="filterData()"><option value="TODAS">Todas</option></select>
     </div>
     <div class="filter-item" style="grid-column: span 2;">
-      <label>Búsqueda (Técnico, CP, etc.)</label>
-      <input type="text" id="txtSearch" placeholder="Escribe para buscar..." oninput="filterData()">
+      <label>Búsqueda General</label>
+      <input type="text" id="txtSearch" placeholder="Buscar por grupo, contrata, provincia..." oninput="filterData()">
     </div>
   </div>
 
@@ -691,8 +688,6 @@ class IRReportProcessor(BaseReportProcessor):
           <th class="text-left">Marca</th>
           <th class="text-left">Operación</th>
           <th class="text-left">Actividad</th>
-          <th class="text-left">CP</th>
-          <th class="text-left">Técnico</th>
           <th class="text-left">Huella</th>
           <th class="text-left">FTTH</th>
           <th class="text-left">Zona Polar</th>
@@ -768,7 +763,7 @@ class IRReportProcessor(BaseReportProcessor):
         (pz === 'TODAS' || d.polar_zone === pz) &&
         (!q || (
           (d.grupo || '') + (d.contrata || '') + (d.provincia || '') + 
-          (d.technician || '') + (d.technician_name || '') + (d.zip_code || '')
+          (d.marca || '') + (d.service_operation || '') + (d.activity_group || '')
         ).toUpperCase().includes(q))
       );
       render(rows);
@@ -802,10 +797,6 @@ class IRReportProcessor(BaseReportProcessor):
         sumPospuesta += Number(d.pospuesta || 0);
         sumPospuestaMM += Number(d.pospuesta_mm || 0);
 
-        const techLabel = d.technician_name && d.technician_name !== '-'
-          ? `${{d.technician_name}} (${{d.technician}})`
-          : d.technician;
-
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td class="text-left">${{d.grupo}}</td>
@@ -814,8 +805,6 @@ class IRReportProcessor(BaseReportProcessor):
           <td class="text-left">${{d.marca}}</td>
           <td class="text-left">${{d.service_operation}}</td>
           <td class="text-left">${{d.activity_group}}</td>
-          <td class="text-left">${{d.zip_code}}</td>
-          <td class="text-left">${{techLabel}}</td>
           <td class="text-left">${{d.footprint}}</td>
           <td class="text-left">${{d.ftth_type}}</td>
           <td class="text-left">${{d.polar_zone}}</td>
@@ -843,7 +832,7 @@ class IRReportProcessor(BaseReportProcessor):
       const perPospTot = (sumBolsa + sumPospuestaMM) > 0 ? (100 * sumPospuesta / (sumBolsa + sumPospuestaMM)) : 0;
 
       document.getElementById('tfoot').innerHTML = `
-        <td class="text-left" colspan="11">TOTAL FILTRADO (${{rows.length}} registros)</td>
+        <td class="text-left" colspan="9">TOTAL FILTRADO (${{rows.length}} registros)</td>
         <td>${{fmt(sumRecM, 0)}}</td><td>${{fmt(sumRecMax)}}</td><td>${{fmt(sumRecD2)}}</td><td>${{fmt(sumRecD1)}}</td>
         <td>${{fmt(sumReaM, 0)}}</td><td>${{fmt(sumReaMax)}}</td><td>${{fmt(sumReaD2)}}</td><td>${{fmt(sumReaD1)}}</td>
         <td><strong>${{fmt(sumBolsa)}}</strong></td>
@@ -903,7 +892,7 @@ class IRReportProcessor(BaseReportProcessor):
                     <td valign="middle">
                       <span style="font-size: 13.5px; font-weight: 800; color: #0369a1;">🌐 Cuadro de Mando Actualizado en SharePoint</span>
                       <p style="margin: 4px 0 0 0; font-size: 12px; color: #334155;">
-                        El informe interactivo con filtros detallados (provincia, técnico, CP, huella, etc.) ya está publicado:
+                        El informe interactivo con filtros detallados (provincia, huella, FTTH, etc.) ya está publicado:
                       </p>
                     </td>
                     <td align="right" valign="middle" style="white-space: nowrap; padding-left: 15px;">
@@ -1168,7 +1157,7 @@ class ReportPipeline:
 
         logging.info(f"=== INICIANDO PIPELINE: {report_key.upper()} (Fecha objetivo: {target_date}) ===")
 
-        # 1. Extracción BigQuery con las nuevas dimensiones agrupadas
+        # 1. Extracción BigQuery con las dimensiones operativas
         query = processor.build_query(target_date)
         raw_rows = self.extractor.execute_query(query)
 
