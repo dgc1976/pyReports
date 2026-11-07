@@ -10,7 +10,8 @@ Capas:
   3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph con saneamiento de rutas.
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
-  6. IRReportProcessor: Especialización para IR y Entradas/Cierres con logo oficial de Orange y tablas completas de Looker (Páginas 1 y 2).
+  6. IRReportProcessor: Especialización para IR, Resumen IR Segmentado (Normalizado, Global, AyT, Migraciones, B2B),
+                        Entradas/Cierres D-8 a D-1 y Calidad de Bolsa.
   7. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
   8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email con Looker completo).
 
@@ -395,7 +396,7 @@ class BaseReportProcessor(ABC):
 
 
 # ==============================================================================
-# 6. IMPLEMENTACIÓN: REPORTE IR CON TABLAS COMPLETAS DE LOOKER (PÁGINAS 1 Y 2)
+# 6. IMPLEMENTACIÓN: REPORTE IR CON TABLA «RESUMEN IR» SEGMENTADA (LOOKER STUDIO)
 # ==============================================================================
 class IRReportProcessor(BaseReportProcessor):
     def __init__(self, table_name: str):
@@ -407,7 +408,7 @@ class IRReportProcessor(BaseReportProcessor):
 
     @staticmethod
     def _fmt(val, dec=0):
-        if val is None or val == "":
+        if val is None or val == "" or str(val).lower() == "none" or str(val).lower() == "null":
             return "-"
         try:
             val_f = float(val)
@@ -423,6 +424,12 @@ class IRReportProcessor(BaseReportProcessor):
         WITH TOTAL_IR AS (
           SELECT 
             *,
+            -- Banderas de Segmentación Operativa de Looker
+            CASE WHEN service_operation IN ('ALTA', 'TRASLADO', 'MIGRACION', 'SWAP', 'MIGRACION ACOMETIDA') THEN TRUE ELSE FALSE END AS Filtro_NORMALIZADO,
+            CASE WHEN service_operation IN ('ALTA', 'TRASLADO') AND activity_group = 'MASIVO' THEN TRUE ELSE FALSE END AS Filtro_AyTMasivo,
+            CASE WHEN service_operation IN ('MIGRACION', 'MIGRACION ACOMETIDA') AND activity_group = 'MASIVO' THEN TRUE ELSE FALSE END AS Filtro_MigMasivo,
+            CASE WHEN activity_group = 'B2B' THEN TRUE ELSE FALSE END AS Filtro_B2B,
+
             CASE WHEN tipo = 'Rec' THEN total_3_dias ELSE 0 END AS MediaRecibidas,
             CASE WHEN tipo = 'Real' THEN total_3_dias ELSE 0 END AS MediaRealizadas,
             CASE WHEN tipo = 'UltDiaReal' THEN total_3_dias ELSE 0 END AS RealUltDiaHabil,
@@ -456,6 +463,7 @@ class IRReportProcessor(BaseReportProcessor):
           COALESCE(normalized_contracts, 'SIN CONTRATA') AS contrata,
           COALESCE(normalized_province, 'SIN PROVINCIA') AS provincia,
 
+          -- Totales de flujo y medias
           ROUND(SUM(MediaRecibidas) / 3, 1) AS rec_media,
           MAX(max_ots) AS rec_max,
           MAX(Recibidas_D_8) AS rec_d8,
@@ -490,7 +498,22 @@ class IRReportProcessor(BaseReportProcessor):
           ROUND(100 * SAFE_DIVIDE(SUM(total_pospuesta), NULLIF(SUM(total_bolsa) + SUM(TotalPospuestaMM_KRTV), 0)), 1) AS per_pospuesto,
           SUM(total_pdtecita) AS pdtecita,
           SUM(total_pospuesta) AS pospuesta,
-          SUM(TotalPospuestaMM_KRTV) AS pospuesta_mm
+          SUM(TotalPospuestaMM_KRTV) AS pospuesta_mm,
+
+          -- Segmentaciones para la tabla «Resumen IR»:
+          -- 1. Normalizado
+          SUM(CASE WHEN Filtro_NORMALIZADO THEN total_bolsa ELSE 0 END) AS bolsa_norm,
+          SUM(CASE WHEN Filtro_NORMALIZADO AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_norm,
+          -- 2. Altas y Traslados Masivo (AyT)
+          SUM(CASE WHEN Filtro_AyTMasivo THEN total_bolsa ELSE 0 END) AS bolsa_ayt,
+          SUM(CASE WHEN Filtro_AyTMasivo AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_ayt,
+          -- 3. Migraciones Masivo
+          SUM(CASE WHEN Filtro_MigMasivo THEN total_bolsa ELSE 0 END) AS bolsa_mig,
+          SUM(CASE WHEN Filtro_MigMasivo AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_mig,
+          -- 4. B2B
+          SUM(CASE WHEN Filtro_B2B THEN total_bolsa ELSE 0 END) AS bolsa_b2b,
+          SUM(CASE WHEN Filtro_B2B AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_b2b
+
         FROM TOTAL_IR
         GROUP BY grupo, contrata, provincia
         ORDER BY grupo, contrata, provincia;
@@ -498,18 +521,30 @@ class IRReportProcessor(BaseReportProcessor):
 
     def transform_data(self, raw_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Calcula las estructuras completas de Looker Studio (Páginas 1 y 2):
-          1. looker_ir_contratas: Tabla 1 de Looker (Recibidas, Realizadas, Bolsa, IR, IR Ayer).
-          2. timeline_entradas: Tabla 2 de Looker (Evolución Recibidas D-8 a D-1).
-          3. timeline_cierres: Tabla 3 de Looker (Evolución Realizadas D-8 a D-1 - Pág 2).
-          4. citas_contratas: Tabla 4 de Looker (Detalle Citas D/D+1/D+2, Obj. Inst, % Pdte y % Pospuesto - Pág 2).
-          5. kpis_marcas: Resumen analítico por Marca (MAS MOVIL, ORANGE, KRTV) y Total Proyecto.
+        Calcula las estructuras completas de Looker Studio:
+          1. resumen_ir_segmentado: Tabla «Resumen IR» (Contrata, IR Normalizado, IR Global, IR AyT, IR Migraciones, IR B2B).
+          2. looker_ir_contratas: Tabla 1 de Looker (Recibidas, Realizadas, Bolsa, IR, IR Ayer).
+          3. timeline_entradas: Tabla 2 de Looker (Evolución Recibidas D-8 a D-1).
+          4. timeline_cierres: Tabla 3 de Looker (Evolución Realizadas D-8 a D-1 - Pág 2).
+          5. citas_contratas: Tabla 4 de Looker (Detalle Citas D/D+1/D+2, Obj. Inst, % Pdte y % Pospuesto - Pág 2).
+          6. kpis_marcas: Resumen analítico por Marca (MAS MOVIL, ORANGE, KRTV) y Total Proyecto.
         """
+        # Estructuras de acumulación
         ir_raw = {}
         tot_ir = {
             "rec_media": 0.0, "rec_max": 0, "rec_d2": 0, "rec_d1": 0,
             "rea_media": 0.0, "rea_max": 0, "rea_d2": 0, "rea_d1": 0,
             "bolsa": 0, "citado": 0, "real_ayer": 0
+        }
+
+        # Acumuladores específicos para «Resumen IR»
+        resumen_ir_raw = {}
+        tot_resumen_ir = {
+            "bolsa_norm": 0, "real_3dias_norm": 0.0,
+            "bolsa_global": 0, "real_3dias_global": 0.0,
+            "bolsa_ayt": 0, "real_3dias_ayt": 0.0,
+            "bolsa_mig": 0, "real_3dias_mig": 0.0,
+            "bolsa_b2b": 0, "real_3dias_b2b": 0.0
         }
 
         entradas_raw = {}
@@ -564,6 +599,16 @@ class IRReportProcessor(BaseReportProcessor):
             posp = int(r.get("pospuesta") or 0)
             posp_mm = int(r.get("pospuesta_mm") or 0)
 
+            # Variables de segmentación para Resumen IR
+            b_norm = int(r.get("bolsa_norm") or 0)
+            r3_norm = float(r.get("real_3dias_norm") or 0.0)
+            b_ayt = int(r.get("bolsa_ayt") or 0)
+            r3_ayt = float(r.get("real_3dias_ayt") or 0.0)
+            b_mig = int(r.get("bolsa_mig") or 0)
+            r3_mig = float(r.get("real_3dias_mig") or 0.0)
+            b_b2b = int(r.get("bolsa_b2b") or 0)
+            r3_b2b = float(r.get("real_3dias_b2b") or 0.0)
+
             # Acumuladores Globales
             tot_bolsa_g += b
             tot_rec_media_g += rec_m
@@ -575,7 +620,38 @@ class IRReportProcessor(BaseReportProcessor):
             tot_pospuesta_g += posp
             tot_pospuesta_mm_g += posp_mm
 
-            # 1. Agrupación Looker Tabla IR (por Contrata)
+            # 1. Agrupación Resumen IR
+            if c not in resumen_ir_raw:
+                resumen_ir_raw[c] = {
+                    "bolsa_norm": 0, "real_3dias_norm": 0.0,
+                    "bolsa_global": 0, "real_3dias_global": 0.0,
+                    "bolsa_ayt": 0, "real_3dias_ayt": 0.0,
+                    "bolsa_mig": 0, "real_3dias_mig": 0.0,
+                    "bolsa_b2b": 0, "real_3dias_b2b": 0.0
+                }
+            resumen_ir_raw[c]["bolsa_norm"] += b_norm
+            resumen_ir_raw[c]["real_3dias_norm"] += r3_norm
+            resumen_ir_raw[c]["bolsa_global"] += b
+            resumen_ir_raw[c]["real_3dias_global"] += (rea_m * 3)
+            resumen_ir_raw[c]["bolsa_ayt"] += b_ayt
+            resumen_ir_raw[c]["real_3dias_ayt"] += r3_ayt
+            resumen_ir_raw[c]["bolsa_mig"] += b_mig
+            resumen_ir_raw[c]["real_3dias_mig"] += r3_mig
+            resumen_ir_raw[c]["bolsa_b2b"] += b_b2b
+            resumen_ir_raw[c]["real_3dias_b2b"] += r3_b2b
+
+            tot_resumen_ir["bolsa_norm"] += b_norm
+            tot_resumen_ir["real_3dias_norm"] += r3_norm
+            tot_resumen_ir["bolsa_global"] += b
+            tot_resumen_ir["real_3dias_global"] += (rea_m * 3)
+            tot_resumen_ir["bolsa_ayt"] += b_ayt
+            tot_resumen_ir["real_3dias_ayt"] += r3_ayt
+            tot_resumen_ir["bolsa_mig"] += b_mig
+            tot_resumen_ir["real_3dias_mig"] += r3_mig
+            tot_resumen_ir["bolsa_b2b"] += b_b2b
+            tot_resumen_ir["real_3dias_b2b"] += r3_b2b
+
+            # 2. Agrupación Looker Tabla IR (por Contrata)
             if c not in ir_raw:
                 ir_raw[c] = {
                     "rec_media": 0.0, "rec_max": 0, "rec_d2": 0, "rec_d1": 0,
@@ -606,7 +682,7 @@ class IRReportProcessor(BaseReportProcessor):
             tot_ir["citado"] += cit
             tot_ir["real_ayer"] += rea_1
 
-            # 2. Agrupación Looker Tabla Entradas (D-8 a D-1)
+            # 3. Agrupación Looker Tabla Entradas (D-8 a D-1)
             if c not in entradas_raw:
                 entradas_raw[c] = {k: 0.0 if "media" in k else 0 for k in tot_entradas.keys()}
             entradas_raw[c]["rec_media"] += rec_m
@@ -620,7 +696,7 @@ class IRReportProcessor(BaseReportProcessor):
                 entradas_raw[c][k] += v
                 tot_entradas[k] += v
 
-            # 3. Agrupación Looker Tabla Cierres (D-8 a D-1 - Pág 2)
+            # 4. Agrupación Looker Tabla Cierres (D-8 a D-1 - Pág 2)
             if c not in cierres_raw:
                 cierres_raw[c] = {k: 0.0 if "media" in k else 0 for k in tot_cierres.keys()}
             cierres_raw[c]["rea_media"] += rea_m
@@ -634,7 +710,7 @@ class IRReportProcessor(BaseReportProcessor):
                 cierres_raw[c][k] += v
                 tot_cierres[k] += v
 
-            # 4. Agrupación Looker Tabla Citas y Calidad de Bolsa (Pág 2)
+            # 5. Agrupación Looker Tabla Citas y Calidad de Bolsa (Pág 2)
             if c not in citas_raw:
                 citas_raw[c] = {
                     "bolsa": 0, "citado": 0, "citad1": 0, "citad2": 0,
@@ -656,7 +732,7 @@ class IRReportProcessor(BaseReportProcessor):
             tot_citas["pospuesta"] += posp
             tot_citas["pospuesta_mm"] += posp_mm
 
-            # 5. Agrupación por Grupo de Marca
+            # 6. Agrupación por Grupo de Marca
             if g not in marcas_agg:
                 marcas_agg[g] = {
                     "bolsa": 0, "rec_media": 0.0, "rea_media": 0.0,
@@ -672,6 +748,39 @@ class IRReportProcessor(BaseReportProcessor):
             marcas_agg[g]["pdtecita"] += p_cita
             marcas_agg[g]["pospuesta"] += posp
             marcas_agg[g]["pospuesta_mm"] += posp_mm
+
+        # ----------------------------------------------------------------------
+        # Formateo de la Tabla «Resumen IR»
+        # ----------------------------------------------------------------------
+        resumen_ir_contratas = {}
+        for c, d in sorted(resumen_ir_raw.items()):
+            ir_n = (d["bolsa_norm"] / (d["real_3dias_norm"] / 3)) if d["real_3dias_norm"] > 0 else None
+            ir_g = (d["bolsa_global"] / (d["real_3dias_global"] / 3)) if d["real_3dias_global"] > 0 else None
+            ir_ayt = (d["bolsa_ayt"] / (d["real_3dias_ayt"] / 3)) if d["real_3dias_ayt"] > 0 else None
+            ir_mig = (d["bolsa_mig"] / (d["real_3dias_mig"] / 3)) if d["real_3dias_mig"] > 0 else None
+            ir_b2b = (d["bolsa_b2b"] / (d["real_3dias_b2b"] / 3)) if d["real_3dias_b2b"] > 0 else None
+
+            resumen_ir_contratas[c] = {
+                "ir_normalizado": self._fmt(ir_n, 1) if ir_n is not None else "null",
+                "ir_global": self._fmt(ir_g, 1) if ir_g is not None else "null",
+                "ir_ayt": self._fmt(ir_ayt, 1) if ir_ayt is not None else "null",
+                "ir_migraciones": self._fmt(ir_mig, 1) if ir_mig is not None else "null",
+                "ir_b2b": self._fmt(ir_b2b, 1) if ir_b2b is not None else "null"
+            }
+
+        tot_ir_n = (tot_resumen_ir["bolsa_norm"] / (tot_resumen_ir["real_3dias_norm"] / 3)) if tot_resumen_ir["real_3dias_norm"] > 0 else 0
+        tot_ir_g = (tot_resumen_ir["bolsa_global"] / (tot_resumen_ir["real_3dias_global"] / 3)) if tot_resumen_ir["real_3dias_global"] > 0 else 0
+        tot_ir_ayt = (tot_resumen_ir["bolsa_ayt"] / (tot_resumen_ir["real_3dias_ayt"] / 3)) if tot_resumen_ir["real_3dias_ayt"] > 0 else 0
+        tot_ir_mig = (tot_resumen_ir["bolsa_mig"] / (tot_resumen_ir["real_3dias_mig"] / 3)) if tot_resumen_ir["real_3dias_mig"] > 0 else 0
+        tot_ir_b2b = (tot_resumen_ir["bolsa_b2b"] / (tot_resumen_ir["real_3dias_b2b"] / 3)) if tot_resumen_ir["real_3dias_b2b"] > 0 else 0
+
+        total_resumen_ir = {
+            "ir_normalizado": self._fmt(tot_ir_n, 1),
+            "ir_global": self._fmt(tot_ir_g, 1),
+            "ir_ayt": self._fmt(tot_ir_ayt, 1),
+            "ir_migraciones": self._fmt(tot_ir_mig, 1),
+            "ir_b2b": self._fmt(tot_ir_b2b, 1)
+        }
 
         # Formatear Tabla IR de Looker por Contrata
         looker_ir_contratas = {}
@@ -802,6 +911,8 @@ class IRReportProcessor(BaseReportProcessor):
         }
 
         return {
+            "resumen_ir_contratas": resumen_ir_contratas,
+            "total_resumen_ir": total_resumen_ir,
             "looker_ir_contratas": looker_ir_contratas,
             "total_looker_ir": total_looker_ir,
             "timeline_entradas": timeline_entradas,
@@ -1061,10 +1172,11 @@ class IRReportProcessor(BaseReportProcessor):
         sharepoint_web_url: str
     ) -> str:
         """
-        Renderiza el cuerpo HTML del correo con la maquetación nativa de Looker Studio (Páginas 1 y 2):
+        Renderiza el cuerpo HTML del correo con la maquetación nativa de Looker Studio:
           - Logo corporativo oficial Orange.
           - Acceso directo a SharePoint.
           - Tarjetas ejecutivas KPI (IR y Bolsa por Marca y Total).
+          - TABLA 0: «Resumen IR» segmentada (Normalizado, Global, AyT, Migraciones, B2B) idéntica a tu captura.
           - TABLA 1 (Looker Pág. 1): Cuadro de Mando IR oficial (Recibidas, Realizadas, Bolsa, IR, IR Ayer, Citados).
           - TABLA 2 (Looker Pág. 1): Entradas (Evolución Recibidas D-8 a D-1 por Contrata).
           - TABLA 3 (Looker Pág. 2): Cierres (Evolución Realizadas D-8 a D-1 por Contrata).
@@ -1113,7 +1225,7 @@ class IRReportProcessor(BaseReportProcessor):
             </tr>
           </table>
 
-          <!-- BANNER: ACCESO DIRECTO A SHAREPOINT (SIN LINK LOOKER) -->
+          <!-- BANNER: ACCESO DIRECTO A SHAREPOINT -->
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 22px;">
             <tr>
               <td style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-left: 5px solid #ff7900; border-radius: 6px; padding: 12px 18px;">
@@ -1163,6 +1275,45 @@ class IRReportProcessor(BaseReportProcessor):
                 <div style="font-size: 11.5px; color: #475569;">Bolsa: <strong>{{ total_global.get('bolsa', '-') }}</strong> | IR Ayer: <strong>{{ total_global.get('ir_ayer', '-') }}</strong></div>
               </td>
             </tr>
+          </table>
+
+          <!-- ================================================================= -->
+          <!-- TABLA RESUMEN IR SEGMENTADA (LOOKER STUDIO)                       -->
+          <!-- ================================================================= -->
+          <div style="font-size: 16px; font-weight: 800; color: #ff5722; margin-bottom: 8px;">
+            Resumen IR
+          </div>
+          <table width="100%" cellpadding="6" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 11.5px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
+            <thead>
+              <tr style="background-color: #ff5722; color: #ffffff;">
+                <th align="left" style="padding: 9px 12px; font-weight: 700;">Contrata &#9652;</th>
+                <th style="padding: 9px 10px; font-weight: 700;">IR Normalizado</th>
+                <th style="padding: 9px 10px; font-weight: 700;">IR Global</th>
+                <th style="padding: 9px 10px; font-weight: 700;">IR AyT</th>
+                <th style="padding: 9px 10px; font-weight: 700;">IR Migraciones</th>
+                <th style="padding: 9px 10px; font-weight: 700;">IR B2B</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for contrata, cdata in resumen_ir_contratas.items() %}
+              <tr style="border-bottom: 1px solid #f1f5f9;">
+                <td align="left" style="padding: 7px 12px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
+                <td style="padding: 7px 10px; font-weight: 600;">{{ cdata.ir_normalizado }}</td>
+                <td style="padding: 7px 10px; font-weight: 600;">{{ cdata.ir_global }}</td>
+                <td style="padding: 7px 10px;">{{ cdata.ir_ayt }}</td>
+                <td style="padding: 7px 10px;">{{ cdata.ir_migraciones }}</td>
+                <td style="padding: 7px 10px;">{{ cdata.ir_b2b }}</td>
+              </tr>
+              {% endfor %}
+              <tr style="background-color: #f8fafc; font-weight: 800; border-top: 2px solid #cbd5e1; border-bottom: 2px solid #cbd5e1; color: #0f172a;">
+                <td align="left" style="padding: 9px 12px;">Total</td>
+                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_normalizado }}</td>
+                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_global }}</td>
+                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_ayt }}</td>
+                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_migraciones }}</td>
+                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_b2b }}</td>
+              </tr>
+            </tbody>
           </table>
 
           <!-- ================================================================= -->
@@ -1453,6 +1604,8 @@ class IRReportProcessor(BaseReportProcessor):
         template = Template(template_str)
         return template.render(
             fecha_ayer_formateada=target_date.strftime("%d/%m/%Y"),
+            resumen_ir_contratas=transformed_data["resumen_ir_contratas"],
+            total_resumen_ir=transformed_data["total_resumen_ir"],
             looker_ir_contratas=transformed_data["looker_ir_contratas"],
             total_looker_ir=transformed_data["total_looker_ir"],
             timeline_entradas=transformed_data["timeline_entradas"],
@@ -1507,7 +1660,7 @@ class SMTPEmailSender:
                     logging.info("Negociando STARTTLS...")
                     smtp.starttls()
                 smtp.send_message(msg, from_addr=self.sender, to_addrs=to_addrs)
-                logging.info("¡Correo con las tablas completas de Looker (Págs 1 y 2) enviado exitosamente!")
+                logging.info("¡Correo con Resumen IR y tablas completas de Looker enviado exitosamente!")
         except Exception as e:
             logging.error(f"Error al enviar mensaje por SMTP: {e}")
             raise
@@ -1570,11 +1723,11 @@ class ReportPipeline:
 
         logging.info(f"=== INICIANDO PIPELINE: {report_key.upper()} (Fecha objetivo: {target_date}) ===")
 
-        # 1. Extracción BigQuery con las 3 dimensiones consolidadas (Grupo, Contrata, Provincia)
+        # 1. Extracción BigQuery con cálculo simultáneo de Resumen IR y flujo diario
         query = processor.build_query(target_date)
         raw_rows = self.extractor.execute_query(query)
 
-        # 2. Transformación de datos para construir las tablas nativas de Looker en el email
+        # 2. Transformación de datos para construir Resumen IR y todas las tablas nativas de Looker
         transformed = processor.transform_data(raw_rows)
 
         # 3. Generación del archivo HTML interactivo en disco con logo oficial de Orange
@@ -1605,7 +1758,7 @@ class ReportPipeline:
             web_template = self.cfg["sharepoint"].get("web_url_template", "")
             sharepoint_web_url = web_template.format(file_name=file_name)
 
-        # 5. Envío de correo con las tablas completas de Looker embebidas en el cuerpo
+        # 5. Envío de correo con la tabla «Resumen IR» y tablas completas de Looker embebidas en el cuerpo
         if skip_email:
             logging.info("Opción --no-email activada. Se omite el envío por SMTP.")
         else:
