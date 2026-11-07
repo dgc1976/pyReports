@@ -19,6 +19,7 @@
     "ir": {
       "subject_prefix": "Informe Diario Entradas y Cierres / IR",
       "attachment_extension": ".txt",
+      "sharepoint_base_url": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/Informes/Dashboard_IR_{date}.html?d=w8d06d24fa7444bd3824f2c8155f004c0&csf=1&web=1&e=AcUmLT",
       "enabled": true
     }
   },

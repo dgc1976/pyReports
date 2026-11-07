@@ -8,7 +8,7 @@ Capas:
   1. ConfigManager: Carga de configuración JSON y merge con argumentos CLI.
   2. BigQueryExtractor: Conexión y ejecución de consultas en Google Cloud BigQuery.
   3. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
-  4. IRReportProcessor: Especialización para el Cuadro de Mando IR y Entradas/Cierres.
+  4. IRReportProcessor: Especialización para el Cuadro de Mando IR, Entradas/Cierres y SharePoint.
   5. SMTPEmailSender: Gestión del transporte SMTP, adjuntos seguros y deduplicación.
   6. ReportPipeline: Orquestador general del ciclo de vida del reporte.
 
@@ -56,7 +56,12 @@ class ConfigManager:
         "reports": {
             "ir": {
                 "subject_prefix": "Informe Diario Entradas y Cierres / IR",
-                "attachment_extension": ".txt"
+                "attachment_extension": ".txt",
+                "sharepoint_base_url": (
+                    "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/"
+                    "Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/Informes/"
+                    "Dashboard_IR_{date}.html?d=w8d06d24fa7444bd3824f2c8155f004c0&csf=1&web=1&e=AcUmLT"
+                )
             }
         },
         "logging": {
@@ -95,6 +100,8 @@ class ConfigManager:
             self.config["smtp"]["use_tls"] = args.use_tls
         if getattr(args, "log_dir", None):
             self.config["logging"]["log_dir"] = args.log_dir
+        if getattr(args, "sharepoint_url", None):
+            self.config["reports"]["ir"]["sharepoint_base_url"] = args.sharepoint_url
 
 
 # ==============================================================================
@@ -158,9 +165,10 @@ class BaseReportProcessor(ABC):
 class IRReportProcessor(BaseReportProcessor):
     """Procesador específico del Cuadro de Mando de IR y Entradas/Cierres."""
 
-    def __init__(self, table_name: str, attachment_ext: str = ".txt"):
+    def __init__(self, table_name: str, attachment_ext: str = ".txt", sharepoint_template: str = ""):
         self.table_name = table_name
         self.attachment_ext = attachment_ext
+        self.sharepoint_template = sharepoint_template
 
     @property
     def report_key(self) -> str:
@@ -177,6 +185,12 @@ class IRReportProcessor(BaseReportProcessor):
             return f"{val_f:,.{dec}f}".replace(",", "X").replace(".", ",").replace("X", ".")
         except Exception:
             return str(val)
+
+    def get_sharepoint_url(self, target_date: date) -> str:
+        date_str = target_date.strftime("%Y-%m-%d")
+        if "{date}" in self.sharepoint_template:
+            return self.sharepoint_template.format(date=date_str)
+        return self.sharepoint_template
 
     def build_query(self, target_date: date) -> str:
         date_str = target_date.strftime("%Y-%m-%d")
@@ -355,12 +369,13 @@ class IRReportProcessor(BaseReportProcessor):
         }
 
     def render_email_body(self, transformed_data: Dict[str, Any], target_date: date) -> str:
+        sharepoint_url = self.get_sharepoint_url(target_date)
         template_str = """
         <!DOCTYPE html>
         <html>
         <head><meta charset="utf-8"></head>
         <body style="margin: 0; padding: 15px; background-color: #f8fafc; font-family: sans-serif; color: #1e293b;">
-          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 16px;">
             <tr>
               <td>
                 <h2 style="margin: 0; font-size: 19px; font-weight: 800; color: #ff5500; text-transform: uppercase;">
@@ -374,6 +389,29 @@ class IRReportProcessor(BaseReportProcessor):
                 <span style="background-color: #0f172a; color: #ffffff; padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 700;">
                   Foto: {{ fecha_ayer_formateada }}
                 </span>
+              </td>
+            </tr>
+          </table>
+
+          <!-- BANNER ACCESO DIRECTO A SHAREPOINT -->
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">
+            <tr>
+              <td style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-left: 5px solid #0284c7; border-radius: 6px; padding: 12px 16px;">
+                <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td valign="middle">
+                      <span style="font-size: 13px; font-weight: 800; color: #0369a1;">🌐 Cuadro de Mando Interactivo Online</span>
+                      <p style="margin: 3px 0 0 0; font-size: 12px; color: #334155;">
+                        Puedes consultar, filtrar por provincia y contrata, y explorar el informe completo directamente en SharePoint:
+                      </p>
+                    </td>
+                    <td align="right" valign="middle" style="white-space: nowrap; padding-left: 15px;">
+                      <a href="{{ sharepoint_url }}" target="_blank" style="background-color: #0284c7; color: #ffffff; text-decoration: none; padding: 8px 16px; border-radius: 4px; font-size: 12px; font-weight: 700; display: inline-block;">
+                        Abrir Dashboard en SharePoint &rarr;
+                      </a>
+                    </td>
+                  </tr>
+                </table>
               </td>
             </tr>
           </table>
@@ -509,7 +547,8 @@ class IRReportProcessor(BaseReportProcessor):
           </table>
 
           <p style="font-size: 11px; color: #64748b; margin-top: 18px;">
-            <em>* Se adjunta el Cuadro de Mando Interactivo completo con extensión permitida <strong><code>{{ attachment_name }}</code></strong>.</em><br>
+            <em>* Se adjunta el archivo con extensión permitida <strong><code>{{ attachment_name }}</code></strong>.</em><br>
+            <em>* Enlace permanente en SharePoint: <a href="{{ sharepoint_url }}" style="color: #0284c7; text-decoration: underline;">Abrir Dashboard en el navegador</a>.</em><br>
             Reporte automático de Operaciones MASORANGE — Fuente: BigQuery (<code>{{ table_name }}</code>).
           </p>
         </body>
@@ -524,7 +563,8 @@ class IRReportProcessor(BaseReportProcessor):
             kpis_marcas=transformed_data["kpis_marcas"],
             total_global=transformed_data["total_global"],
             attachment_name=attachment_name,
-            table_name=self.table_name
+            table_name=self.table_name,
+            sharepoint_url=sharepoint_url
         )
 
     def build_attachment(self, raw_rows: List[Dict[str, Any]], target_date: date) -> Tuple[str, str]:
@@ -692,7 +732,8 @@ class ReportPipeline:
         # Registro del reporte IR oficial
         ir_proc = IRReportProcessor(
             table_name=self.cfg["bigquery"]["dataset_table_ir"],
-            attachment_ext=self.cfg["reports"]["ir"]["attachment_extension"]
+            attachment_ext=self.cfg["reports"]["ir"]["attachment_extension"],
+            sharepoint_template=self.cfg["reports"]["ir"].get("sharepoint_base_url", "")
         )
         self.register_processor(ir_proc)
 
@@ -780,6 +821,11 @@ def parse_arguments() -> argparse.Namespace:
         "--log-dir",
         default=None,
         help="Directorio donde se guardarán los ficheros de log (sobrescribe config.json)"
+    )
+    parser.add_argument(
+        "--sharepoint-url",
+        default=None,
+        help="URL o plantilla de enlace a SharePoint (sobrescribe config.json)"
     )
     return parser.parse_args()
 
