@@ -10,7 +10,7 @@ Capas:
   3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph con saneamiento de rutas.
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
-  6. IRReportProcessor: Especialización para IR y Entradas/Cierres con agregación ágil (Grupo, Contrata, Provincia).
+  6. IRReportProcessor: Especialización para IR y Entradas/Cierres con logo oficial de Orange.
   7. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
   8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email).
 
@@ -335,7 +335,7 @@ class ConfigManager:
         if getattr(args, "log_dir", None):
             self.config["logging"]["log_dir"] = args.log_dir
         if getattr(args, "local_dir", None):
-            self.config["reports"]["ir"]["local_output_dir"] = args.local_dir
+            self.config["reports"]["ir"]]["local_output_dir"] = args.local_dir
         if getattr(args, "sp_folder", None):
             self.config["sharepoint"]["target_folder"] = args.sp_folder
         if getattr(args, "sp_ini", None):
@@ -392,7 +392,7 @@ class BaseReportProcessor(ABC):
 
 
 # ==============================================================================
-# 6. IMPLEMENTACIÓN: REPORTE IR CON AGREGACIÓN ÁGIL Y BRANDING ORANGE
+# 6. IMPLEMENTACIÓN: REPORTE IR CON LOGO OFICIAL ORANGE
 # ==============================================================================
 class IRReportProcessor(BaseReportProcessor):
     def __init__(self, table_name: str):
@@ -603,9 +603,11 @@ class IRReportProcessor(BaseReportProcessor):
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 14px; background: #f8fafc; font-size: 11px; color: #1e293b; }}
     .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 2px solid #ff7900; padding-bottom: 8px; }}
-    .brand-container {{ display: flex; align-items: center; gap: 10px; }}
-    .orange-logo-sq {{ width: 28px; height: 28px; background-color: #ff7900; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-weight: 900; color: #fff; font-size: 16px; font-family: Helvetica, Arial, sans-serif; }}
-    .header h1 {{ margin: 0; font-size: 17px; color: #000000; font-weight: 800; }}
+    .brand-container {{ display: flex; align-items: center; gap: 12px; }}
+    .orange-logo-container {{ display: flex; align-items: center; gap: 8px; }}
+    .orange-square {{ width: 30px; height: 30px; background-color: #ff7900; display: inline-block; }}
+    .orange-wordmark {{ font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 24px; font-weight: 800; color: #000000; letter-spacing: -0.6px; }}
+    .header h1 {{ margin: 0; font-size: 16px; color: #0f172a; font-weight: 800; }}
     .header h1 span {{ color: #ff7900; }}
     .filters-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; background: #ffffff; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; }}
     .filter-item label {{ display: block; font-size: 10px; font-weight: 700; color: #64748b; margin-bottom: 3px; text-transform: uppercase; }}
@@ -625,8 +627,13 @@ class IRReportProcessor(BaseReportProcessor):
 <body>
   <div class="header">
     <div class="brand-container">
-      <div class="orange-logo-sq">o</div>
-      <h1><span>Orange</span> — Cuadro de Mando IR y Operaciones ({date_es})</h1>
+      <div class="orange-logo-container">
+        <span class="orange-square"></span>
+        <span class="orange-wordmark">orange</span>
+      </div>
+      <h1 style="border-left: 2px solid #cbd5e1; padding-left: 12px; margin-left: 4px;">
+        Cuadro de Mando IR y Operaciones ({date_es})
+      </h1>
     </div>
     <span style="font-weight: 700; color: #64748b;">Orange Operaciones</span>
   </div>
@@ -805,21 +812,22 @@ class IRReportProcessor(BaseReportProcessor):
         <html>
         <head><meta charset="utf-8"></head>
         <body style="margin: 0; padding: 15px; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1e293b;">
-          <!-- CABECERA PRINCIPAL CON LOGO DE ORANGE -->
+          <!-- CABECERA PRINCIPAL CON LOGOTIPO OFICIAL DE ORANGE -->
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 18px;">
             <tr>
               <td valign="middle">
+                <!-- LOGO OFICIAL ORANGE (CUADRADO SÓLIDO + WORDMARK) -->
                 <table cellpadding="0" cellspacing="0" border="0">
                   <tr>
-                    <td style="width: 36px; height: 36px; background-color: #ff7900; text-align: center; vertical-align: middle; border-radius: 4px;">
-                      <span style="color: #ffffff; font-family: Helvetica, Arial, sans-serif; font-size: 20px; font-weight: 900; line-height: 1;">o</span>
+                    <td style="width: 32px; height: 32px; background-color: #ff7900; line-height: 0; font-size: 0;" valign="middle">
+                      &nbsp;
                     </td>
-                    <td style="padding-left: 12px; vertical-align: middle;">
-                      <span style="font-family: Helvetica, Arial, sans-serif; font-size: 22px; font-weight: 900; color: #000000; letter-spacing: -0.5px;">orange</span>
+                    <td style="padding-left: 10px; vertical-align: middle;">
+                      <span style="font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 26px; font-weight: 800; color: #000000; letter-spacing: -0.6px; line-height: 1;">orange</span>
                     </td>
                   </tr>
                 </table>
-                <h2 style="margin: 8px 0 0 0; font-size: 19px; font-weight: 800; color: #0f172a; text-transform: uppercase;">
+                <h2 style="margin: 10px 0 0 0; font-size: 19px; font-weight: 800; color: #0f172a; text-transform: uppercase;">
                   Entradas y Cierres
                 </h2>
                 <p style="margin: 4px 0 0 0; font-size: 13px; color: #64748b;">
@@ -1115,7 +1123,7 @@ class ReportPipeline:
         # 2. Transformación de datos para el cuerpo del correo
         transformed = processor.transform_data(raw_rows)
 
-        # 3. Generación del archivo HTML interactivo en disco con panel de filtros ágil y branding Orange
+        # 3. Generación del archivo HTML interactivo en disco con logo oficial de Orange
         out_dir = self.cfg["reports"][report_key].get(
             "local_output_dir",
             r"D:\Automaticos\Extraciones Datos Informes\Informes\IR"
