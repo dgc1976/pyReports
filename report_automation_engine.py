@@ -11,9 +11,9 @@ Capas:
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
   6. IRReportProcessor: Especialización para IR, Resumen IR Segmentado (Normalizado, Global, AyT, Migraciones, B2B),
-                        Entradas/Cierres D-8 a D-1 y Calidad de Bolsa.
+                        Entradas/Cierres D-8 a D-1 y Calidad de Bolsa (con exclusión de contratas inactivas).
   7. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
-  8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email con Looker completo).
+  8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email compacto).
 
 Autor: David González Cogolludo
 Departamento: Operaciones Orange
@@ -396,9 +396,11 @@ class BaseReportProcessor(ABC):
 
 
 # ==============================================================================
-# 6. IMPLEMENTACIÓN: REPORTE IR CON TABLA «RESUMEN IR» SEGMENTADA (LOOKER STUDIO)
+# 6. IMPLEMENTACIÓN: REPORTE IR COMPACTO SIN CONTRATAS INACTIVAS
 # ==============================================================================
 class IRReportProcessor(BaseReportProcessor):
+    EXCLUDED_CONTRATAS = {"FOL", "ICONO", "NO_DEFINIDO", "OTROS", "SIN CONTRATA"}
+
     def __init__(self, table_name: str):
         self.table_name = table_name
 
@@ -408,7 +410,7 @@ class IRReportProcessor(BaseReportProcessor):
 
     @staticmethod
     def _fmt(val, dec=0):
-        if val is None or val == "" or str(val).lower() == "none" or str(val).lower() == "null":
+        if val is None or val == "" or str(val).lower() in ("none", "null", "nan"):
             return "-"
         try:
             val_f = float(val)
@@ -457,6 +459,8 @@ class IRReportProcessor(BaseReportProcessor):
             CASE WHEN brand_group IN ('MAS MOVIL', 'KRTV') THEN total_pospuesta ELSE 0 END AS TotalPospuestaMM_KRTV
           FROM `{self.table_name}`
           WHERE fecha_referencia = '{date_str}'
+            AND UPPER(TRIM(normalized_contracts)) NOT IN ('FOL', 'ICONO', 'NO_DEFINIDO', 'OTROS', 'SIN CONTRATA')
+            AND normalized_contracts IS NOT NULL
         )
         SELECT 
           COALESCE(brand_group, 'OTROS') AS grupo,
@@ -501,16 +505,12 @@ class IRReportProcessor(BaseReportProcessor):
           SUM(TotalPospuestaMM_KRTV) AS pospuesta_mm,
 
           -- Segmentaciones para la tabla «Resumen IR»:
-          -- 1. Normalizado
           SUM(CASE WHEN Filtro_NORMALIZADO THEN total_bolsa ELSE 0 END) AS bolsa_norm,
           SUM(CASE WHEN Filtro_NORMALIZADO AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_norm,
-          -- 2. Altas y Traslados Masivo (AyT)
           SUM(CASE WHEN Filtro_AyTMasivo THEN total_bolsa ELSE 0 END) AS bolsa_ayt,
           SUM(CASE WHEN Filtro_AyTMasivo AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_ayt,
-          -- 3. Migraciones Masivo
           SUM(CASE WHEN Filtro_MigMasivo THEN total_bolsa ELSE 0 END) AS bolsa_mig,
           SUM(CASE WHEN Filtro_MigMasivo AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_mig,
-          -- 4. B2B
           SUM(CASE WHEN Filtro_B2B THEN total_bolsa ELSE 0 END) AS bolsa_b2b,
           SUM(CASE WHEN Filtro_B2B AND tipo = 'Real' THEN total_3_dias ELSE 0 END) AS real_3dias_b2b
 
@@ -521,15 +521,10 @@ class IRReportProcessor(BaseReportProcessor):
 
     def transform_data(self, raw_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Calcula las estructuras completas de Looker Studio:
-          1. resumen_ir_segmentado: Tabla «Resumen IR» (Contrata, IR Normalizado, IR Global, IR AyT, IR Migraciones, IR B2B).
-          2. looker_ir_contratas: Tabla 1 de Looker (Recibidas, Realizadas, Bolsa, IR, IR Ayer).
-          3. timeline_entradas: Tabla 2 de Looker (Evolución Recibidas D-8 a D-1).
-          4. timeline_cierres: Tabla 3 de Looker (Evolución Realizadas D-8 a D-1 - Pág 2).
-          5. citas_contratas: Tabla 4 de Looker (Detalle Citas D/D+1/D+2, Obj. Inst, % Pdte y % Pospuesto - Pág 2).
-          6. kpis_marcas: Resumen analítico por Marca (MAS MOVIL, ORANGE, KRTV) y Total Proyecto.
+        Calcula las estructuras completas de Looker Studio excluyendo contratas inactivas:
+          - Elimina FOL, ICONO, NO_DEFINIDO, OTROS.
+          - Reemplaza 'null' por '-' para un diseño limpio y profesional.
         """
-        # Estructuras de acumulación
         ir_raw = {}
         tot_ir = {
             "rec_media": 0.0, "rec_max": 0, "rec_d2": 0, "rec_d1": 0,
@@ -537,7 +532,6 @@ class IRReportProcessor(BaseReportProcessor):
             "bolsa": 0, "citado": 0, "real_ayer": 0
         }
 
-        # Acumuladores específicos para «Resumen IR»
         resumen_ir_raw = {}
         tot_resumen_ir = {
             "bolsa_norm": 0, "real_3dias_norm": 0.0,
@@ -578,8 +572,11 @@ class IRReportProcessor(BaseReportProcessor):
         tot_pospuesta_mm_g = 0
 
         for r in raw_rows:
+            c = str(r.get("contrata") or "").strip().upper()
+            if not c or c in self.EXCLUDED_CONTRATAS:
+                continue
+
             g = str(r.get("grupo") or "OTROS").strip()
-            c = str(r.get("contrata") or "SIN CONTRATA").strip()
 
             b = int(r.get("bolsa") or 0)
             rec_m = float(r.get("rec_media") or 0.0)
@@ -599,7 +596,6 @@ class IRReportProcessor(BaseReportProcessor):
             posp = int(r.get("pospuesta") or 0)
             posp_mm = int(r.get("pospuesta_mm") or 0)
 
-            # Variables de segmentación para Resumen IR
             b_norm = int(r.get("bolsa_norm") or 0)
             r3_norm = float(r.get("real_3dias_norm") or 0.0)
             b_ayt = int(r.get("bolsa_ayt") or 0)
@@ -609,7 +605,6 @@ class IRReportProcessor(BaseReportProcessor):
             b_b2b = int(r.get("bolsa_b2b") or 0)
             r3_b2b = float(r.get("real_3dias_b2b") or 0.0)
 
-            # Acumuladores Globales
             tot_bolsa_g += b
             tot_rec_media_g += rec_m
             tot_rea_media_g += rea_m
@@ -651,7 +646,7 @@ class IRReportProcessor(BaseReportProcessor):
             tot_resumen_ir["bolsa_b2b"] += b_b2b
             tot_resumen_ir["real_3dias_b2b"] += r3_b2b
 
-            # 2. Agrupación Looker Tabla IR (por Contrata)
+            # 2. Agrupación Looker Tabla IR
             if c not in ir_raw:
                 ir_raw[c] = {
                     "rec_media": 0.0, "rec_max": 0, "rec_d2": 0, "rec_d1": 0,
@@ -682,7 +677,7 @@ class IRReportProcessor(BaseReportProcessor):
             tot_ir["citado"] += cit
             tot_ir["real_ayer"] += rea_1
 
-            # 3. Agrupación Looker Tabla Entradas (D-8 a D-1)
+            # 3. Agrupación Looker Tabla Entradas
             if c not in entradas_raw:
                 entradas_raw[c] = {k: 0.0 if "media" in k else 0 for k in tot_entradas.keys()}
             entradas_raw[c]["rec_media"] += rec_m
@@ -696,7 +691,7 @@ class IRReportProcessor(BaseReportProcessor):
                 entradas_raw[c][k] += v
                 tot_entradas[k] += v
 
-            # 4. Agrupación Looker Tabla Cierres (D-8 a D-1 - Pág 2)
+            # 4. Agrupación Looker Tabla Cierres
             if c not in cierres_raw:
                 cierres_raw[c] = {k: 0.0 if "media" in k else 0 for k in tot_cierres.keys()}
             cierres_raw[c]["rea_media"] += rea_m
@@ -710,7 +705,7 @@ class IRReportProcessor(BaseReportProcessor):
                 cierres_raw[c][k] += v
                 tot_cierres[k] += v
 
-            # 5. Agrupación Looker Tabla Citas y Calidad de Bolsa (Pág 2)
+            # 5. Agrupación Looker Tabla Citas y Calidad
             if c not in citas_raw:
                 citas_raw[c] = {
                     "bolsa": 0, "citado": 0, "citad1": 0, "citad2": 0,
@@ -761,11 +756,11 @@ class IRReportProcessor(BaseReportProcessor):
             ir_b2b = (d["bolsa_b2b"] / (d["real_3dias_b2b"] / 3)) if d["real_3dias_b2b"] > 0 else None
 
             resumen_ir_contratas[c] = {
-                "ir_normalizado": self._fmt(ir_n, 1) if ir_n is not None else "null",
-                "ir_global": self._fmt(ir_g, 1) if ir_g is not None else "null",
-                "ir_ayt": self._fmt(ir_ayt, 1) if ir_ayt is not None else "null",
-                "ir_migraciones": self._fmt(ir_mig, 1) if ir_mig is not None else "null",
-                "ir_b2b": self._fmt(ir_b2b, 1) if ir_b2b is not None else "null"
+                "ir_normalizado": self._fmt(ir_n, 1),
+                "ir_global": self._fmt(ir_g, 1),
+                "ir_ayt": self._fmt(ir_ayt, 1),
+                "ir_migraciones": self._fmt(ir_mig, 1),
+                "ir_b2b": self._fmt(ir_b2b, 1)
             }
 
         tot_ir_n = (tot_resumen_ir["bolsa_norm"] / (tot_resumen_ir["real_3dias_norm"] / 3)) if tot_resumen_ir["real_3dias_norm"] > 0 else 0
@@ -932,32 +927,37 @@ class IRReportProcessor(BaseReportProcessor):
         file_name = f"Dashboard_IR_{date_str}.html"
         output_path = os.path.join(output_dir, file_name)
 
-        json_payload = json.dumps(raw_rows, default=str, ensure_ascii=False)
+        filtered_rows = [
+            r for r in raw_rows
+            if str(r.get("contrata") or "").strip().upper() not in self.EXCLUDED_CONTRATAS
+        ]
+
+        json_payload = json.dumps(filtered_rows, default=str, ensure_ascii=False)
         html_content = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
   <title>Orange — Cuadro de Mando IR y Operaciones ({date_es})</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 14px; background: #f8fafc; font-size: 11px; color: #1e293b; }}
-    .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 2px solid #ff7900; padding-bottom: 8px; }}
-    .brand-container {{ display: flex; align-items: center; gap: 12px; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 10px; background: #f8fafc; font-size: 11px; color: #1e293b; }}
+    .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 2px solid #ff7900; padding-bottom: 6px; }}
+    .brand-container {{ display: flex; align-items: center; gap: 10px; }}
     .orange-logo-box {{
-      width: 44px;
-      height: 44px;
+      width: 40px;
+      height: 40px;
       background-color: #ff7900;
       border-radius: 8px 0 0 0;
       position: relative;
       display: inline-flex;
       align-items: flex-end;
-      padding: 0 0 5px 6px;
+      padding: 0 0 4px 5px;
       box-sizing: border-box;
       flex-shrink: 0;
     }}
     .orange-logo-text {{
       color: #ffffff;
       font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
-      font-size: 10px;
+      font-size: 9.5px;
       font-weight: 800;
       line-height: 1;
       letter-spacing: -0.2px;
@@ -968,18 +968,18 @@ class IRReportProcessor(BaseReportProcessor):
       line-height: 0;
       margin-left: 1px;
     }}
-    .header h1 {{ margin: 0; font-size: 16px; color: #0f172a; font-weight: 800; }}
+    .header h1 {{ margin: 0; font-size: 15px; color: #0f172a; font-weight: 800; }}
     .header h1 span {{ color: #ff7900; }}
-    .filters-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; background: #ffffff; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; }}
-    .filter-item label {{ display: block; font-size: 10px; font-weight: 700; color: #64748b; margin-bottom: 3px; text-transform: uppercase; }}
-    select, input {{ width: 100%; box-sizing: border-box; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 11px; background: #fff; }}
+    .filters-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 10px; background: #ffffff; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0; }}
+    .filter-item label {{ display: block; font-size: 9.5px; font-weight: 700; color: #64748b; margin-bottom: 2px; text-transform: uppercase; }}
+    select, input {{ width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 11px; background: #fff; }}
     .tbl-container {{ overflow-x: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }}
     table {{ width: 100%; border-collapse: collapse; text-align: right; }}
-    th, td {{ padding: 6px 8px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }}
+    th, td {{ padding: 5px 6px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }}
     thead th {{ background: #fff8f3; color: #475569; font-weight: 700; border-bottom: 2px solid #ffcc99; }}
     .text-left {{ text-align: left; }}
     .row-total {{ background: #fffdf9; font-weight: 800; border-top: 2px solid #ffaa66; border-bottom: 2px solid #ffaa66; color: #0f172a; position: sticky; bottom: 0; }}
-    .pill {{ padding: 2px 6px; border-radius: 8px; font-weight: 700; font-size: 10px; display: inline-block; }}
+    .pill {{ padding: 2px 5px; border-radius: 6px; font-weight: 700; font-size: 9.5px; display: inline-block; }}
     .pill-green {{ background: #dcfce7; color: #15803d; }}
     .pill-amber {{ background: #fef9c3; color: #a16207; }}
     .pill-red {{ background: #fee2e2; color: #b91c1c; }}
@@ -991,11 +991,11 @@ class IRReportProcessor(BaseReportProcessor):
       <div class="orange-logo-box">
         <span class="orange-logo-text">orange<sup>TM</sup></span>
       </div>
-      <h1 style="border-left: 2px solid #cbd5e1; padding-left: 12px; margin-left: 4px;">
+      <h1 style="border-left: 2px solid #cbd5e1; padding-left: 10px; margin-left: 2px;">
         Cuadro de Mando IR y Operaciones ({date_es})
       </h1>
     </div>
-    <span style="font-weight: 700; color: #64748b;">Orange Operaciones</span>
+    <span style="font-weight: 700; color: #64748b; font-size: 10.5px;">Orange Operaciones</span>
   </div>
 
   <div class="filters-grid">
@@ -1172,74 +1172,66 @@ class IRReportProcessor(BaseReportProcessor):
         sharepoint_web_url: str
     ) -> str:
         """
-        Renderiza el cuerpo HTML del correo con la maquetación nativa de Looker Studio:
-          - Logo corporativo oficial Orange.
-          - Acceso directo a SharePoint.
-          - Tarjetas ejecutivas KPI (IR y Bolsa por Marca y Total).
-          - TABLA 0: «Resumen IR» segmentada (Normalizado, Global, AyT, Migraciones, B2B) idéntica a tu captura.
-          - TABLA 1 (Looker Pág. 1): Cuadro de Mando IR oficial (Recibidas, Realizadas, Bolsa, IR, IR Ayer, Citados).
-          - TABLA 2 (Looker Pág. 1): Entradas (Evolución Recibidas D-8 a D-1 por Contrata).
-          - TABLA 3 (Looker Pág. 2): Cierres (Evolución Realizadas D-8 a D-1 por Contrata).
-          - TABLA 4 (Looker Pág. 2): Citas, Capacidad y Calidad de Bolsa por Contrata (Citados D/D+1/D+2, Obj. Inst, % Pdte y % Pospuesto).
-          - TABLA 5: Resumen Consolidado por Grupo de Marcas.
+        Renderiza el cuerpo HTML ultracompacto para el correo:
+          - Sin contratas inactivas (FOL, ICONO, NO_DEFINIDO, OTROS eliminadas).
+          - Padding y márgenes reducidos para eliminar espacios vacíos.
+          - Valores sin actividad representados limpiamente con '-'.
         """
         template_str = """
         <!DOCTYPE html>
         <html>
         <head><meta charset="utf-8"></head>
-        <body style="margin: 0; padding: 15px; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1e293b;">
-          <!-- CABECERA PRINCIPAL CON LOGOTIPO OFICIAL DE ORANGE -->
-          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 18px;">
+        <body style="margin: 0; padding: 8px; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1e293b; font-size: 11px;">
+          <!-- CABECERA PRINCIPAL CON LOGOTIPO COMPACTO DE ORANGE -->
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 8px;">
             <tr>
               <td valign="middle">
                 <table cellpadding="0" cellspacing="0" border="0">
                   <tr>
                     <td valign="middle">
-                      <table cellpadding="0" cellspacing="0" border="0" style="width: 44px; height: 44px; background-color: #ff7900; border-radius: 8px 0 0 0;">
+                      <table cellpadding="0" cellspacing="0" border="0" style="width: 36px; height: 36px; background-color: #ff7900; border-radius: 6px 0 0 0;">
                         <tr>
-                          <td style="height: 27px; line-height: 0; font-size: 0;">&nbsp;</td>
+                          <td style="height: 22px; line-height: 0; font-size: 0;">&nbsp;</td>
                         </tr>
                         <tr>
-                          <td style="height: 17px; padding-left: 5px; padding-bottom: 4px; vertical-align: bottom;">
-                            <span style="color: #ffffff; font-family: Helvetica, Arial, sans-serif; font-size: 10px; font-weight: 800; line-height: 1; letter-spacing: -0.2px;">orange<sup style="font-size: 5px; vertical-align: super; line-height: 0;">TM</sup></span>
+                          <td style="height: 14px; padding-left: 4px; padding-bottom: 3px; vertical-align: bottom;">
+                            <span style="color: #ffffff; font-family: Helvetica, Arial, sans-serif; font-size: 8.5px; font-weight: 800; line-height: 1; letter-spacing: -0.2px;">orange<sup style="font-size: 4px; vertical-align: super; line-height: 0;">TM</sup></span>
                           </td>
                         </tr>
                       </table>
                     </td>
-                    <td style="padding-left: 12px; vertical-align: middle;">
-                      <h2 style="margin: 0; font-size: 19px; font-weight: 800; color: #0f172a; text-transform: uppercase;">
+                    <td style="padding-left: 10px; vertical-align: middle;">
+                      <h2 style="margin: 0; font-size: 16px; font-weight: 800; color: #0f172a; text-transform: uppercase;">
                         Informe Operativo: Entradas, Cierres e IR
                       </h2>
-                      <p style="margin: 3px 0 0 0; font-size: 12.5px; color: #64748b;">
-                        Seguimiento Operativo Diario de Producción, Bolsa y Calidad de Citas — Orange Operaciones
+                      <p style="margin: 1px 0 0 0; font-size: 11px; color: #64748b;">
+                        Orange Operaciones — Seguimiento Diario de Producción y Calidad de Citas
                       </p>
                     </td>
                   </tr>
                 </table>
               </td>
               <td align="right" valign="top">
-                <span style="background-color: #0f172a; color: #ffffff; padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 700;">
+                <span style="background-color: #0f172a; color: #ffffff; padding: 4px 10px; border-radius: 12px; font-size: 10px; font-weight: 700;">
                   Foto: {{ fecha_ayer_formateada }}
                 </span>
               </td>
             </tr>
           </table>
 
-          <!-- BANNER: ACCESO DIRECTO A SHAREPOINT -->
-          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 22px;">
+          <!-- BANNER COMPACTO: ACCESO DIRECTO A SHAREPOINT -->
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 10px;">
             <tr>
-              <td style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-left: 5px solid #ff7900; border-radius: 6px; padding: 12px 18px;">
+              <td style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-left: 4px solid #ff7900; border-radius: 4px; padding: 7px 12px;">
                 <table width="100%" cellpadding="0" cellspacing="0" border="0">
                   <tr>
                     <td valign="middle">
-                      <span style="font-size: 13px; font-weight: 800; color: #0f172a;">Cuadro de Mando Interactivo Disponible</span>
-                      <p style="margin: 2px 0 0 0; font-size: 11.5px; color: #334155;">
-                        Puedes abrir el cuadro de mando dinámico con filtros por Grupo, Contrata y Provincia alojado en SharePoint:
-                      </p>
+                      <span style="font-size: 11.5px; font-weight: 800; color: #0f172a;">Cuadro de Mando Interactivo</span>
+                      <span style="font-size: 11px; color: #475569; margin-left: 6px;">(Filtros por Grupo, Contrata y Provincia en SharePoint):</span>
                     </td>
-                    <td align="right" valign="middle" style="white-space: nowrap; padding-left: 15px;">
-                      <a href="{{ sharepoint_web_url }}" target="_blank" style="background-color: #ff7900; color: #ffffff; text-decoration: none; padding: 8px 16px; border-radius: 4px; font-size: 11.5px; font-weight: 700; display: inline-block;">
-                        Ver Dashboard en SharePoint &rarr;
+                    <td align="right" valign="middle" style="white-space: nowrap; padding-left: 10px;">
+                      <a href="{{ sharepoint_web_url }}" target="_blank" style="background-color: #ff7900; color: #ffffff; text-decoration: none; padding: 5px 12px; border-radius: 4px; font-size: 10.5px; font-weight: 700; display: inline-block;">
+                        Ver en SharePoint &rarr;
                       </a>
                     </td>
                   </tr>
@@ -1248,311 +1240,299 @@ class IRReportProcessor(BaseReportProcessor):
             </tr>
           </table>
 
-          <!-- TARJETAS RESUMEN KPI -->
-          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 22px;">
+          <!-- TARJETAS RESUMEN KPI COMPACTAS -->
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 12px;">
             <tr>
-              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 4px solid #ff6600; border-radius: 8px; padding: 14px;">
-                <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase;">GMM (MásMóvil)</div>
-                <div style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">{{ kpis_marcas.get('MAS MOVIL', {}).get('ir', '-') }}</div>
-                <div style="font-size: 11.5px; color: #475569;">Bolsa: <strong>{{ kpis_marcas.get('MAS MOVIL', {}).get('bolsa', '-') }}</strong> | D-1: <strong>{{ kpis_marcas.get('MAS MOVIL', {}).get('rea_d1', '-') }}</strong></div>
+              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 3px solid #ff6600; border-radius: 6px; padding: 8px 10px;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">GMM (MásMóvil)</div>
+                <div style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 2px 0;">{{ kpis_marcas.get('MAS MOVIL', {}).get('ir', '-') }}</div>
+                <div style="font-size: 10.5px; color: #475569;">Bolsa: <strong>{{ kpis_marcas.get('MAS MOVIL', {}).get('bolsa', '-') }}</strong> | D-1: <strong>{{ kpis_marcas.get('MAS MOVIL', {}).get('rea_d1', '-') }}</strong></div>
               </td>
               <td width="2%">&nbsp;</td>
-              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 4px solid #ff7900; border-radius: 8px; padding: 14px;">
-                <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase;">OSP (Orange)</div>
-                <div style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">{{ kpis_marcas.get('ORANGE', {}).get('ir', '-') }}</div>
-                <div style="font-size: 11.5px; color: #475569;">Bolsa: <strong>{{ kpis_marcas.get('ORANGE', {}).get('bolsa', '-') }}</strong> | D-1: <strong>{{ kpis_marcas.get('ORANGE', {}).get('rea_d1', '-') }}</strong></div>
+              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 3px solid #ff7900; border-radius: 6px; padding: 8px 10px;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">OSP (Orange)</div>
+                <div style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 2px 0;">{{ kpis_marcas.get('ORANGE', {}).get('ir', '-') }}</div>
+                <div style="font-size: 10.5px; color: #475569;">Bolsa: <strong>{{ kpis_marcas.get('ORANGE', {}).get('bolsa', '-') }}</strong> | D-1: <strong>{{ kpis_marcas.get('ORANGE', {}).get('rea_d1', '-') }}</strong></div>
               </td>
               <td width="2%">&nbsp;</td>
-              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 4px solid #6366f1; border-radius: 8px; padding: 14px;">
-                <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase;">KRTV (Euskaltel)</div>
-                <div style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">{{ kpis_marcas.get('KRTV', {}).get('ir', '-') }}</div>
-                <div style="font-size: 11.5px; color: #475569;">Bolsa: <strong>{{ kpis_marcas.get('KRTV', {}).get('bolsa', '-') }}</strong> | D-1: <strong>{{ kpis_marcas.get('KRTV', {}).get('rea_d1', '-') }}</strong></div>
+              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 3px solid #6366f1; border-radius: 6px; padding: 8px 10px;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">KRTV (Euskaltel)</div>
+                <div style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 2px 0;">{{ kpis_marcas.get('KRTV', {}).get('ir', '-') }}</div>
+                <div style="font-size: 10.5px; color: #475569;">Bolsa: <strong>{{ kpis_marcas.get('KRTV', {}).get('bolsa', '-') }}</strong> | D-1: <strong>{{ kpis_marcas.get('KRTV', {}).get('rea_d1', '-') }}</strong></div>
               </td>
               <td width="2%">&nbsp;</td>
-              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 4px solid #0f172a; border-radius: 8px; padding: 14px;">
-                <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase;">Total Proyecto</div>
-                <div style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">{{ total_global.get('ir', '-') }}</div>
-                <div style="font-size: 11.5px; color: #475569;">Bolsa: <strong>{{ total_global.get('bolsa', '-') }}</strong> | IR Ayer: <strong>{{ total_global.get('ir_ayer', '-') }}</strong></div>
+              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 3px solid #0f172a; border-radius: 6px; padding: 8px 10px;">
+                <div style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">Total Proyecto</div>
+                <div style="font-size: 20px; font-weight: 800; color: #0f172a; margin: 2px 0;">{{ total_global.get('ir', '-') }}</div>
+                <div style="font-size: 10.5px; color: #475569;">Bolsa: <strong>{{ total_global.get('bolsa', '-') }}</strong> | IR Ayer: <strong>{{ total_global.get('ir_ayer', '-') }}</strong></div>
               </td>
             </tr>
           </table>
 
-          <!-- ================================================================= -->
-          <!-- TABLA RESUMEN IR SEGMENTADA (LOOKER STUDIO)                       -->
-          <!-- ================================================================= -->
-          <div style="font-size: 16px; font-weight: 800; color: #ff5722; margin-bottom: 8px;">
+          <!-- TABLA RESUMEN IR (SEGMENTADA NATIVA) -->
+          <div style="font-size: 13px; font-weight: 800; color: #ff5722; margin-bottom: 4px;">
             Resumen IR
           </div>
-          <table width="100%" cellpadding="6" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 11.5px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
+          <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 11px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
               <tr style="background-color: #ff5722; color: #ffffff;">
-                <th align="left" style="padding: 9px 12px; font-weight: 700;">Contrata &#9652;</th>
-                <th style="padding: 9px 10px; font-weight: 700;">IR Normalizado</th>
-                <th style="padding: 9px 10px; font-weight: 700;">IR Global</th>
-                <th style="padding: 9px 10px; font-weight: 700;">IR AyT</th>
-                <th style="padding: 9px 10px; font-weight: 700;">IR Migraciones</th>
-                <th style="padding: 9px 10px; font-weight: 700;">IR B2B</th>
+                <th align="left" style="padding: 6px 8px; font-weight: 700;">Contrata &#9652;</th>
+                <th style="padding: 6px 8px; font-weight: 700;">IR Normalizado</th>
+                <th style="padding: 6px 8px; font-weight: 700;">IR Global</th>
+                <th style="padding: 6px 8px; font-weight: 700;">IR AyT</th>
+                <th style="padding: 6px 8px; font-weight: 700;">IR Migraciones</th>
+                <th style="padding: 6px 8px; font-weight: 700;">IR B2B</th>
               </tr>
             </thead>
             <tbody>
               {% for contrata, cdata in resumen_ir_contratas.items() %}
               <tr style="border-bottom: 1px solid #f1f5f9;">
-                <td align="left" style="padding: 7px 12px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
-                <td style="padding: 7px 10px; font-weight: 600;">{{ cdata.ir_normalizado }}</td>
-                <td style="padding: 7px 10px; font-weight: 600;">{{ cdata.ir_global }}</td>
-                <td style="padding: 7px 10px;">{{ cdata.ir_ayt }}</td>
-                <td style="padding: 7px 10px;">{{ cdata.ir_migraciones }}</td>
-                <td style="padding: 7px 10px;">{{ cdata.ir_b2b }}</td>
+                <td align="left" style="padding: 4px 8px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
+                <td style="padding: 4px 8px; font-weight: 600;">{{ cdata.ir_normalizado }}</td>
+                <td style="padding: 4px 8px; font-weight: 600;">{{ cdata.ir_global }}</td>
+                <td style="padding: 4px 8px;">{{ cdata.ir_ayt }}</td>
+                <td style="padding: 4px 8px;">{{ cdata.ir_migraciones }}</td>
+                <td style="padding: 4px 8px;">{{ cdata.ir_b2b }}</td>
               </tr>
               {% endfor %}
               <tr style="background-color: #f8fafc; font-weight: 800; border-top: 2px solid #cbd5e1; border-bottom: 2px solid #cbd5e1; color: #0f172a;">
-                <td align="left" style="padding: 9px 12px;">Total</td>
-                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_normalizado }}</td>
-                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_global }}</td>
-                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_ayt }}</td>
-                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_migraciones }}</td>
-                <td style="padding: 9px 10px; font-weight: 900;">{{ total_resumen_ir.ir_b2b }}</td>
+                <td align="left" style="padding: 6px 8px;">Total</td>
+                <td style="padding: 6px 8px; font-weight: 900;">{{ total_resumen_ir.ir_normalizado }}</td>
+                <td style="padding: 6px 8px; font-weight: 900;">{{ total_resumen_ir.ir_global }}</td>
+                <td style="padding: 6px 8px; font-weight: 900;">{{ total_resumen_ir.ir_ayt }}</td>
+                <td style="padding: 6px 8px; font-weight: 900;">{{ total_resumen_ir.ir_migraciones }}</td>
+                <td style="padding: 6px 8px; font-weight: 900;">{{ total_resumen_ir.ir_b2b }}</td>
               </tr>
             </tbody>
           </table>
 
-          <!-- ================================================================= -->
-          <!-- 1. TABLA NATIVA DE LOOKER (PÁG 1): CUADRO DE MANDO IR             -->
-          <!-- ================================================================= -->
-          <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
-            1. Cuadro de Mando IR (Índice de Rotación por Contrata) — Looker Studio (Pág. 1)
+          <!-- TABLA 1: CUADRO DE MANDO IR -->
+          <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
+            1. Cuadro de Mando IR (Índice de Rotación por Contrata)
           </div>
-          <table width="100%" cellpadding="5" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
+          <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
               <tr style="background-color: #fff8f3; color: #475569; border-bottom: 2px solid #ffcc99;">
-                <th align="left" style="padding: 8px 10px; color: #0f172a; font-weight: 700;">Contrata</th>
-                <th style="padding: 8px 6px;">Rec. Media</th>
-                <th style="padding: 8px 6px;">Rec. Max</th>
-                <th style="padding: 8px 6px;">Rec. D-2</th>
-                <th style="padding: 8px 6px; background-color: #fff3e6; color: #0f172a; font-weight: 700;">Rec. D-1</th>
-                <th style="padding: 8px 6px;">Rea. Media</th>
-                <th style="padding: 8px 6px;">Rea. Max</th>
-                <th style="padding: 8px 6px;">Rea. D-2</th>
-                <th style="padding: 8px 6px; background-color: #fff3e6; color: #0f172a; font-weight: 700;">Rea. D-1</th>
-                <th style="padding: 8px 8px; font-weight: 800; color: #0f172a;">Bolsa</th>
-                <th style="padding: 8px 8px; background-color: #fef08a; color: #0f172a; font-weight: 800;">IR</th>
-                <th style="padding: 8px 6px;">IR Ayer</th>
-                <th style="padding: 8px 6px;">Citado D</th>
+                <th align="left" style="padding: 6px 8px; color: #0f172a; font-weight: 700;">Contrata</th>
+                <th style="padding: 6px 5px;">Rec. Media</th>
+                <th style="padding: 6px 5px;">Rec. Max</th>
+                <th style="padding: 6px 5px;">Rec. D-2</th>
+                <th style="padding: 6px 5px; background-color: #fff3e6; color: #0f172a; font-weight: 700;">Rec. D-1</th>
+                <th style="padding: 6px 5px;">Rea. Media</th>
+                <th style="padding: 6px 5px;">Rea. Max</th>
+                <th style="padding: 6px 5px;">Rea. D-2</th>
+                <th style="padding: 6px 5px; background-color: #fff3e6; color: #0f172a; font-weight: 700;">Rea. D-1</th>
+                <th style="padding: 6px 6px; font-weight: 800; color: #0f172a;">Bolsa</th>
+                <th style="padding: 6px 6px; background-color: #fef08a; color: #0f172a; font-weight: 800;">IR</th>
+                <th style="padding: 6px 5px;">IR Ayer</th>
+                <th style="padding: 6px 5px;">Citado D</th>
               </tr>
             </thead>
             <tbody>
               {% for contrata, cdata in looker_ir_contratas.items() %}
               <tr style="border-bottom: 1px solid #f8eee7;">
-                <td align="left" style="padding: 6px 10px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_media }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_max }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_d2 }}</td>
-                <td style="padding: 6px 6px; background-color: #fffdf5; font-weight: 600;">{{ cdata.rec_d1 }}</td>
-                <td style="padding: 6px 6px; font-weight: 600;">{{ cdata.rea_media }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_max }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_d2 }}</td>
-                <td style="padding: 6px 6px; background-color: #fffdf5; font-weight: 600;">{{ cdata.rea_d1 }}</td>
-                <td style="padding: 6px 8px; font-weight: 800; color: #0f172a;">{{ cdata.bolsa }}</td>
-                <td style="padding: 6px 8px; background-color: #fef9c3; font-weight: 800; color: #0f172a;">{{ cdata.ir }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.ir_ayer }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.citado }}</td>
+                <td align="left" style="padding: 4px 8px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_media }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_max }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_d2 }}</td>
+                <td style="padding: 4px 5px; background-color: #fffdf5; font-weight: 600;">{{ cdata.rec_d1 }}</td>
+                <td style="padding: 4px 5px; font-weight: 600;">{{ cdata.rea_media }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_max }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_d2 }}</td>
+                <td style="padding: 4px 5px; background-color: #fffdf5; font-weight: 600;">{{ cdata.rea_d1 }}</td>
+                <td style="padding: 4px 6px; font-weight: 800; color: #0f172a;">{{ cdata.bolsa }}</td>
+                <td style="padding: 4px 6px; background-color: #fef9c3; font-weight: 800; color: #0f172a;">{{ cdata.ir }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.ir_ayer }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.citado }}</td>
               </tr>
               {% endfor %}
               <tr style="background-color: #fffdf9; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
-                <td align="left" style="padding: 8px 10px;">Total</td>
-                <td style="padding: 8px 6px;">{{ total_looker_ir.rec_media }}</td>
-                <td style="padding: 8px 6px;">{{ total_looker_ir.rec_max }}</td>
-                <td style="padding: 8px 6px;">{{ total_looker_ir.rec_d2 }}</td>
-                <td style="padding: 8px 6px; background-color: #fef08a;">{{ total_looker_ir.rec_d1 }}</td>
-                <td style="padding: 8px 6px;">{{ total_looker_ir.rea_media }}</td>
-                <td style="padding: 8px 6px;">{{ total_looker_ir.rea_max }}</td>
-                <td style="padding: 8px 6px;">{{ total_looker_ir.rea_d2 }}</td>
-                <td style="padding: 8px 6px; background-color: #fef08a;">{{ total_looker_ir.rea_d1 }}</td>
-                <td style="padding: 8px 8px; color: #0f172a;">{{ total_looker_ir.bolsa }}</td>
-                <td style="padding: 8px 8px; background-color: #fef08a; color: #0f172a; font-weight: 900;">{{ total_looker_ir.ir }}</td>
-                <td style="padding: 8px 6px;">{{ total_looker_ir.ir_ayer }}</td>
-                <td style="padding: 8px 6px;">{{ total_looker_ir.citado }}</td>
+                <td align="left" style="padding: 6px 8px;">Total</td>
+                <td style="padding: 6px 5px;">{{ total_looker_ir.rec_media }}</td>
+                <td style="padding: 6px 5px;">{{ total_looker_ir.rec_max }}</td>
+                <td style="padding: 6px 5px;">{{ total_looker_ir.rec_d2 }}</td>
+                <td style="padding: 6px 5px; background-color: #fef08a;">{{ total_looker_ir.rec_d1 }}</td>
+                <td style="padding: 6px 5px;">{{ total_looker_ir.rea_media }}</td>
+                <td style="padding: 6px 5px;">{{ total_looker_ir.rea_max }}</td>
+                <td style="padding: 6px 5px;">{{ total_looker_ir.rea_d2 }}</td>
+                <td style="padding: 6px 5px; background-color: #fef08a;">{{ total_looker_ir.rea_d1 }}</td>
+                <td style="padding: 6px 6px; color: #0f172a;">{{ total_looker_ir.bolsa }}</td>
+                <td style="padding: 6px 6px; background-color: #fef08a; color: #0f172a; font-weight: 900;">{{ total_looker_ir.ir }}</td>
+                <td style="padding: 6px 5px;">{{ total_looker_ir.ir_ayer }}</td>
+                <td style="padding: 6px 5px;">{{ total_looker_ir.citado }}</td>
               </tr>
             </tbody>
           </table>
 
-          <!-- ================================================================= -->
-          <!-- 2. TABLA NATIVA DE LOOKER (PÁG 1): ENTRADAS (D-8 A D-1)           -->
-          <!-- ================================================================= -->
-          <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
-            2. Entradas (Evolución Diaria de Recibidas D-8 a D-1 por Contrata) — Looker Studio (Pág. 1)
+          <!-- TABLA 2: ENTRADAS (D-8 A D-1) -->
+          <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
+            2. Entradas (Evolución Diaria de Recibidas D-8 a D-1 por Contrata)
           </div>
-          <table width="100%" cellpadding="5" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
+          <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
               <tr style="background-color: #fff8f3; border-bottom: 2px solid #ffcc99; color: #475569;">
-                <th align="left" style="padding: 8px 10px; color: #0f172a; font-weight: 700;">Contrata</th>
-                <th style="padding: 8px 6px; font-weight: 700;">Media</th>
-                <th style="padding: 8px 6px; font-weight: 700;">Max</th>
-                <th style="padding: 8px 6px;">D-8</th>
-                <th style="padding: 8px 6px;">D-7</th>
-                <th style="padding: 8px 6px;">D-6</th>
-                <th style="padding: 8px 6px;">D-5</th>
-                <th style="padding: 8px 6px;">D-4</th>
-                <th style="padding: 8px 6px;">D-3</th>
-                <th style="padding: 8px 6px;">D-2</th>
-                <th style="padding: 8px 6px; background-color: #fff3e6; font-weight: 700; color: #0f172a;">D-1</th>
+                <th align="left" style="padding: 6px 8px; color: #0f172a; font-weight: 700;">Contrata</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Max</th>
+                <th style="padding: 6px 5px;">D-8</th>
+                <th style="padding: 6px 5px;">D-7</th>
+                <th style="padding: 6px 5px;">D-6</th>
+                <th style="padding: 6px 5px;">D-5</th>
+                <th style="padding: 6px 5px;">D-4</th>
+                <th style="padding: 6px 5px;">D-3</th>
+                <th style="padding: 6px 5px;">D-2</th>
+                <th style="padding: 6px 5px; background-color: #fff3e6; font-weight: 700; color: #0f172a;">D-1</th>
               </tr>
             </thead>
             <tbody>
               {% for contrata, cdata in timeline_entradas.items() %}
               <tr style="border-bottom: 1px solid #f8eee7;">
-                <td align="left" style="padding: 6px 10px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
-                <td style="padding: 6px 6px; font-weight: 600;">{{ cdata.rec_media }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_max }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_d8 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_d7 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_d6 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_d5 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_d4 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_d3 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rec_d2 }}</td>
-                <td style="padding: 6px 6px; background-color: #fffdf5; font-weight: 700; color: #0f172a;">{{ cdata.rec_d1 }}</td>
+                <td align="left" style="padding: 4px 8px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
+                <td style="padding: 4px 5px; font-weight: 600;">{{ cdata.rec_media }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_max }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_d8 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_d7 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_d6 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_d5 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_d4 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_d3 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rec_d2 }}</td>
+                <td style="padding: 4px 5px; background-color: #fffdf5; font-weight: 700; color: #0f172a;">{{ cdata.rec_d1 }}</td>
               </tr>
               {% endfor %}
               <tr style="background-color: #fffdf9; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
-                <td align="left" style="padding: 8px 10px;">Total</td>
-                <td style="padding: 8px 6px;">{{ total_entradas.rec_media }}</td>
-                <td style="padding: 8px 6px;">{{ total_entradas.rec_max }}</td>
-                <td style="padding: 8px 6px;">{{ total_entradas.rec_d8 }}</td>
-                <td style="padding: 8px 6px;">{{ total_entradas.rec_d7 }}</td>
-                <td style="padding: 8px 6px;">{{ total_entradas.rec_d6 }}</td>
-                <td style="padding: 8px 6px;">{{ total_entradas.rec_d5 }}</td>
-                <td style="padding: 8px 6px;">{{ total_entradas.rec_d4 }}</td>
-                <td style="padding: 8px 6px;">{{ total_entradas.rec_d3 }}</td>
-                <td style="padding: 8px 6px;">{{ total_entradas.rec_d2 }}</td>
-                <td style="padding: 8px 6px; background-color: #fef08a; color: #0f172a;">{{ total_entradas.rec_d1 }}</td>
+                <td align="left" style="padding: 6px 8px;">Total</td>
+                <td style="padding: 6px 5px;">{{ total_entradas.rec_media }}</td>
+                <td style="padding: 6px 5px;">{{ total_entradas.rec_max }}</td>
+                <td style="padding: 6px 5px;">{{ total_entradas.rec_d8 }}</td>
+                <td style="padding: 6px 5px;">{{ total_entradas.rec_d7 }}</td>
+                <td style="padding: 6px 5px;">{{ total_entradas.rec_d6 }}</td>
+                <td style="padding: 6px 5px;">{{ total_entradas.rec_d5 }}</td>
+                <td style="padding: 6px 5px;">{{ total_entradas.rec_d4 }}</td>
+                <td style="padding: 6px 5px;">{{ total_entradas.rec_d3 }}</td>
+                <td style="padding: 6px 5px;">{{ total_entradas.rec_d2 }}</td>
+                <td style="padding: 6px 5px; background-color: #fef08a; color: #0f172a;">{{ total_entradas.rec_d1 }}</td>
               </tr>
             </tbody>
           </table>
 
-          <!-- ================================================================= -->
-          <!-- 3. TABLA NATIVA DE LOOKER (PÁG 2): CIERRES (D-8 A D-1)            -->
-          <!-- ================================================================= -->
-          <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
-            3. Cierres (Evolución Diaria de Realizadas D-8 a D-1 por Contrata) — Looker Studio (Pág. 2)
+          <!-- TABLA 3: CIERRES (D-8 A D-1) -->
+          <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
+            3. Cierres (Evolución Diaria de Realizadas D-8 a D-1 por Contrata)
           </div>
-          <table width="100%" cellpadding="5" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
+          <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
               <tr style="background-color: #f1f5f9; border-bottom: 2px solid #94a3b8; color: #334155;">
-                <th align="left" style="padding: 8px 10px; color: #0f172a; font-weight: 700;">Contrata</th>
-                <th style="padding: 8px 6px; font-weight: 700;">Media</th>
-                <th style="padding: 8px 6px; font-weight: 700;">Max</th>
-                <th style="padding: 8px 6px;">D-8</th>
-                <th style="padding: 8px 6px;">D-7</th>
-                <th style="padding: 8px 6px;">D-6</th>
-                <th style="padding: 8px 6px;">D-5</th>
-                <th style="padding: 8px 6px;">D-4</th>
-                <th style="padding: 8px 6px;">D-3</th>
-                <th style="padding: 8px 6px;">D-2</th>
-                <th style="padding: 8px 6px; background-color: #e2e8f0; font-weight: 700; color: #0f172a;">D-1</th>
+                <th align="left" style="padding: 6px 8px; color: #0f172a; font-weight: 700;">Contrata</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Media</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Max</th>
+                <th style="padding: 6px 5px;">D-8</th>
+                <th style="padding: 6px 5px;">D-7</th>
+                <th style="padding: 6px 5px;">D-6</th>
+                <th style="padding: 6px 5px;">D-5</th>
+                <th style="padding: 6px 5px;">D-4</th>
+                <th style="padding: 6px 5px;">D-3</th>
+                <th style="padding: 6px 5px;">D-2</th>
+                <th style="padding: 6px 5px; background-color: #e2e8f0; font-weight: 700; color: #0f172a;">D-1</th>
               </tr>
             </thead>
             <tbody>
               {% for contrata, cdata in timeline_cierres.items() %}
               <tr style="border-bottom: 1px solid #f1f5f9;">
-                <td align="left" style="padding: 6px 10px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
-                <td style="padding: 6px 6px; font-weight: 600;">{{ cdata.rea_media }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_max }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_d8 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_d7 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_d6 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_d5 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_d4 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_d3 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.rea_d2 }}</td>
-                <td style="padding: 6px 6px; background-color: #f8fafc; font-weight: 700; color: #0f172a;">{{ cdata.rea_d1 }}</td>
+                <td align="left" style="padding: 4px 8px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
+                <td style="padding: 4px 5px; font-weight: 600;">{{ cdata.rea_media }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_max }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_d8 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_d7 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_d6 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_d5 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_d4 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_d3 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.rea_d2 }}</td>
+                <td style="padding: 4px 5px; background-color: #f8fafc; font-weight: 700; color: #0f172a;">{{ cdata.rea_d1 }}</td>
               </tr>
               {% endfor %}
               <tr style="background-color: #0f172a; font-weight: 800; border-top: 2px solid #334155; color: #ffffff;">
-                <td align="left" style="padding: 8px 10px; color: #ffffff;">Total</td>
-                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_media }}</td>
-                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_max }}</td>
-                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d8 }}</td>
-                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d7 }}</td>
-                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d6 }}</td>
-                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d5 }}</td>
-                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d4 }}</td>
-                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d3 }}</td>
-                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d2 }}</td>
-                <td style="padding: 8px 6px; background-color: #334155; color: #fef08a;">{{ total_cierres.rea_d1 }}</td>
+                <td align="left" style="padding: 6px 8px; color: #ffffff;">Total</td>
+                <td style="padding: 6px 5px; color: #ffffff;">{{ total_cierres.rea_media }}</td>
+                <td style="padding: 6px 5px; color: #ffffff;">{{ total_cierres.rea_max }}</td>
+                <td style="padding: 6px 5px; color: #ffffff;">{{ total_cierres.rea_d8 }}</td>
+                <td style="padding: 6px 5px; color: #ffffff;">{{ total_cierres.rea_d7 }}</td>
+                <td style="padding: 6px 5px; color: #ffffff;">{{ total_cierres.rea_d6 }}</td>
+                <td style="padding: 6px 5px; color: #ffffff;">{{ total_cierres.rea_d5 }}</td>
+                <td style="padding: 6px 5px; color: #ffffff;">{{ total_cierres.rea_d4 }}</td>
+                <td style="padding: 6px 5px; color: #ffffff;">{{ total_cierres.rea_d3 }}</td>
+                <td style="padding: 6px 5px; color: #ffffff;">{{ total_cierres.rea_d2 }}</td>
+                <td style="padding: 6px 5px; background-color: #334155; color: #fef08a;">{{ total_cierres.rea_d1 }}</td>
               </tr>
             </tbody>
           </table>
 
-          <!-- ================================================================= -->
-          <!-- 4. TABLA NATIVA DE LOOKER (PÁG 2): ESTADO DE CITAS Y CALIDAD      -->
-          <!-- ================================================================= -->
-          <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
-            4. Estado de Citas, Capacidad y Calidad de Bolsa por Contrata — Looker Studio (Pág. 2)
+          <!-- TABLA 4: ESTADO DE CITAS Y CALIDAD -->
+          <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
+            4. Estado de Citas, Capacidad y Calidad de Bolsa por Contrata
           </div>
-          <table width="100%" cellpadding="5" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
+          <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
               <tr style="background-color: #fff8f3; border-bottom: 2px solid #ffcc99; color: #475569;">
-                <th align="left" style="padding: 8px 10px; color: #0f172a; font-weight: 700;">Contrata</th>
-                <th style="padding: 8px 8px; font-weight: 800; color: #0f172a;">Bolsa</th>
-                <th style="padding: 8px 6px;">Citado D</th>
-                <th style="padding: 8px 6px;">Cita D+1</th>
-                <th style="padding: 8px 6px;">Cita D+2</th>
-                <th style="padding: 8px 6px; background-color: #fff3e6; font-weight: 700; color: #0f172a;">IR Previsto</th>
-                <th style="padding: 8px 6px; font-weight: 700;">Obj. Inst</th>
-                <th style="padding: 8px 6px;">% Pdte Cita</th>
-                <th style="padding: 8px 6px;">% Pospuesto</th>
+                <th align="left" style="padding: 6px 8px; color: #0f172a; font-weight: 700;">Contrata</th>
+                <th style="padding: 6px 6px; font-weight: 800; color: #0f172a;">Bolsa</th>
+                <th style="padding: 6px 5px;">Citado D</th>
+                <th style="padding: 6px 5px;">Cita D+1</th>
+                <th style="padding: 6px 5px;">Cita D+2</th>
+                <th style="padding: 6px 5px; background-color: #fff3e6; font-weight: 700; color: #0f172a;">IR Previsto</th>
+                <th style="padding: 6px 5px; font-weight: 700;">Obj. Inst</th>
+                <th style="padding: 6px 5px;">% Pdte Cita</th>
+                <th style="padding: 6px 5px;">% Pospuesto</th>
               </tr>
             </thead>
             <tbody>
               {% for contrata, cdata in citas_contratas.items() %}
               <tr style="border-bottom: 1px solid #f8eee7;">
-                <td align="left" style="padding: 6px 10px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
-                <td style="padding: 6px 8px; font-weight: 800; color: #0f172a;">{{ cdata.bolsa }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.citado }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.citad1 }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.citad2 }}</td>
-                <td style="padding: 6px 6px; background-color: #fffdf5; font-weight: 700; color: #0f172a;">{{ cdata.ir_previsto }}</td>
-                <td style="padding: 6px 6px; font-weight: 700;">{{ cdata.n_inst_bjetivo }}</td>
-                <td style="padding: 6px 6px;">{{ cdata.per_pdte_cita }}%</td>
-                <td style="padding: 6px 6px;">{{ cdata.per_pospuesto }}%</td>
+                <td align="left" style="padding: 4px 8px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
+                <td style="padding: 4px 6px; font-weight: 800; color: #0f172a;">{{ cdata.bolsa }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.citado }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.citad1 }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.citad2 }}</td>
+                <td style="padding: 4px 5px; background-color: #fffdf5; font-weight: 700; color: #0f172a;">{{ cdata.ir_previsto }}</td>
+                <td style="padding: 4px 5px; font-weight: 700;">{{ cdata.n_inst_bjetivo }}</td>
+                <td style="padding: 4px 5px;">{{ cdata.per_pdte_cita }}%</td>
+                <td style="padding: 4px 5px;">{{ cdata.per_pospuesto }}%</td>
               </tr>
               {% endfor %}
               <tr style="background-color: #fffdf9; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
-                <td align="left" style="padding: 8px 10px;">Total</td>
-                <td style="padding: 8px 8px; color: #0f172a;">{{ total_citas.bolsa }}</td>
-                <td style="padding: 8px 6px;">{{ total_citas.citado }}</td>
-                <td style="padding: 8px 6px;">{{ total_citas.citad1 }}</td>
-                <td style="padding: 8px 6px;">{{ total_citas.citad2 }}</td>
-                <td style="padding: 8px 6px; background-color: #fef08a; color: #0f172a; font-weight: 900;">{{ total_citas.ir_previsto }}</td>
-                <td style="padding: 8px 6px; font-weight: 900;">{{ total_citas.n_inst_bjetivo }}</td>
-                <td style="padding: 8px 6px;">{{ total_citas.per_pdte_cita }}%</td>
-                <td style="padding: 8px 6px;">{{ total_citas.per_pospuesto }}%</td>
+                <td align="left" style="padding: 6px 8px;">Total</td>
+                <td style="padding: 6px 6px; color: #0f172a;">{{ total_citas.bolsa }}</td>
+                <td style="padding: 6px 5px;">{{ total_citas.citado }}</td>
+                <td style="padding: 6px 5px;">{{ total_citas.citad1 }}</td>
+                <td style="padding: 6px 5px;">{{ total_citas.citad2 }}</td>
+                <td style="padding: 6px 5px; background-color: #fef08a; color: #0f172a; font-weight: 900;">{{ total_citas.ir_previsto }}</td>
+                <td style="padding: 6px 5px; font-weight: 900;">{{ total_citas.n_inst_bjetivo }}</td>
+                <td style="padding: 6px 5px;">{{ total_citas.per_pdte_cita }}%</td>
+                <td style="padding: 6px 5px;">{{ total_citas.per_pospuesto }}%</td>
               </tr>
             </tbody>
           </table>
 
-          <!-- ================================================================= -->
-          <!-- 5. RESUMEN EJECUTIVO: GRUPOS DE MARCAS                            -->
-          <!-- ================================================================= -->
-          <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
+          <!-- TABLA 5: RESUMEN GRUPOS DE MARCAS -->
+          <div style="font-size: 12px; font-weight: 800; color: #0f172a; margin-bottom: 4px;">
             5. Resumen Consolidado por Grupo de Marcas (Stock, Citas y Pospuesto)
           </div>
-          <table width="100%" cellpadding="6" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 22px; border-collapse: collapse;">
+          <table width="100%" cellpadding="4" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 10.5px; text-align: right; margin-bottom: 12px; border-collapse: collapse;">
             <thead>
               <tr style="background-color: #000000; color: #ffffff;">
-                <th align="left" style="padding: 8px 10px;">Grupo</th>
-                <th style="padding: 8px 6px;">Rec. Media</th>
-                <th style="padding: 8px 6px;">Rea. Media</th>
-                <th style="padding: 8px 6px;">Rea. D-1</th>
-                <th style="padding: 8px 6px;">Bolsa</th>
-                <th style="background-color: #1e293b; color: #fef08a; padding: 8px 8px;">IR</th>
-                <th style="padding: 8px 6px;">IR Ayer</th>
-                <th style="padding: 8px 6px;">Citado D</th>
-                <th style="padding: 8px 6px;">Cita D+1</th>
-                <th style="padding: 8px 6px;">IR Prev.</th>
-                <th style="padding: 8px 6px;">% Pdte Cita</th>
-                <th style="padding: 8px 6px;">% Pospuesto</th>
+                <th align="left" style="padding: 6px 8px;">Grupo</th>
+                <th style="padding: 6px 5px;">Rec. Media</th>
+                <th style="padding: 6px 5px;">Rea. Media</th>
+                <th style="padding: 6px 5px;">Rea. D-1</th>
+                <th style="padding: 6px 5px;">Bolsa</th>
+                <th style="background-color: #1e293b; color: #fef08a; padding: 6px 6px;">IR</th>
+                <th style="padding: 6px 5px;">IR Ayer</th>
+                <th style="padding: 6px 5px;">Citado D</th>
+                <th style="padding: 6px 5px;">Cita D+1</th>
+                <th style="padding: 6px 5px;">IR Prev.</th>
+                <th style="padding: 6px 5px;">% Pdte Cita</th>
+                <th style="padding: 6px 5px;">% Pospuesto</th>
               </tr>
             </thead>
             <tbody>
@@ -1560,43 +1540,42 @@ class IRReportProcessor(BaseReportProcessor):
               {% if kpis_marcas.get(g_nombre) %}
               {% set m = kpis_marcas[g_nombre] %}
               <tr style="border-bottom: 1px solid #f1f5f9; background-color: #ffffff;">
-                <td align="left" style="padding: 7px 10px; font-weight: bold; color: #0f172a;">{{ g_nombre }}</td>
-                <td style="padding: 7px 6px;">{{ m.rec_media }}</td>
-                <td style="padding: 7px 6px;">{{ m.rea_media }}</td>
-                <td style="padding: 7px 6px;">{{ m.rea_d1 }}</td>
-                <td style="padding: 7px 6px; font-weight: bold;">{{ m.bolsa }}</td>
-                <td style="background-color: #fff9c3; font-weight: 800; color: #0f172a; padding: 7px 8px;">{{ m.ir }}</td>
-                <td style="padding: 7px 6px;">{{ m.ir_ayer }}</td>
-                <td style="padding: 7px 6px;">{{ m.citado }}</td>
-                <td style="padding: 7px 6px;">{{ m.citad1 }}</td>
-                <td style="padding: 7px 6px;">{{ m.ir_previsto }}</td>
-                <td style="padding: 7px 6px;">{{ m.per_pdte }}%</td>
-                <td style="padding: 7px 6px;">{{ m.per_posp }}%</td>
+                <td align="left" style="padding: 5px 8px; font-weight: bold; color: #0f172a;">{{ g_nombre }}</td>
+                <td style="padding: 5px 5px;">{{ m.rec_media }}</td>
+                <td style="padding: 5px 5px;">{{ m.rea_media }}</td>
+                <td style="padding: 5px 5px;">{{ m.rea_d1 }}</td>
+                <td style="padding: 5px 5px; font-weight: bold;">{{ m.bolsa }}</td>
+                <td style="background-color: #fff9c3; font-weight: 800; color: #0f172a; padding: 5px 6px;">{{ m.ir }}</td>
+                <td style="padding: 5px 5px;">{{ m.ir_ayer }}</td>
+                <td style="padding: 5px 5px;">{{ m.citado }}</td>
+                <td style="padding: 5px 5px;">{{ m.citad1 }}</td>
+                <td style="padding: 5px 5px;">{{ m.ir_previsto }}</td>
+                <td style="padding: 5px 5px;">{{ m.per_pdte }}%</td>
+                <td style="padding: 5px 5px;">{{ m.per_posp }}%</td>
               </tr>
               {% endif %}
               {% endfor %}
               <tr style="background-color: #0f172a; color: #ffffff; font-weight: 800;">
-                <td align="left" style="padding: 9px 10px; color: #ffffff;">TOTAL PROYECTO</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.rec_media }}</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.rea_media }}</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.rea_d1 }}</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.bolsa }}</td>
-                <td style="background-color: #fef08a; color: #0f172a; font-weight: 900; padding: 9px 8px;">{{ total_global.ir }}</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.ir_ayer }}</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.citado }}</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.citad1 }}</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.ir_previsto }}</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.per_pdte }}%</td>
-                <td style="padding: 9px 6px; color: #ffffff;">{{ total_global.per_posp }}%</td>
+                <td align="left" style="padding: 7px 8px; color: #ffffff;">TOTAL PROYECTO</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.rec_media }}</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.rea_media }}</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.rea_d1 }}</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.bolsa }}</td>
+                <td style="background-color: #fef08a; color: #0f172a; font-weight: 900; padding: 7px 6px;">{{ total_global.ir }}</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.ir_ayer }}</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.citado }}</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.citad1 }}</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.ir_previsto }}</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.per_pdte }}%</td>
+                <td style="padding: 7px 5px; color: #ffffff;">{{ total_global.per_posp }}%</td>
               </tr>
             </tbody>
           </table>
 
-          <!-- PIE DE CORREO -->
-          <p style="font-size: 11px; color: #64748b; margin-top: 18px; line-height: 1.5;">
-            <em>* Todas las métricas mostradas en este correo han sido calculadas directamente sobre BigQuery reproduciendo fielmente el modelo de Looker Studio (Páginas 1 y 2).</em><br>
-            El cuadro de mando interactivo con desglose provincial completo está disponible en <a href="{{ sharepoint_web_url }}" style="color: #ff7900; text-decoration: underline; font-weight: bold;">SharePoint Orange</a>.<br>
-            Reporte automático de Operaciones Orange — Fuente: BigQuery (<code>{{ table_name }}</code>).
+          <!-- PIE DE CORREO COMPACTO -->
+          <p style="font-size: 10px; color: #64748b; margin-top: 10px; line-height: 1.4;">
+            <em>* Métricas extraídas de BigQuery (<code>{{ table_name }}</code>) reproduciendo el modelo de Looker Studio.</em><br>
+            Cuadro de mando interactivo alojado en <a href="{{ sharepoint_web_url }}" style="color: #ff7900; text-decoration: underline; font-weight: bold;">SharePoint Orange</a>.
           </p>
         </body>
         </html>
