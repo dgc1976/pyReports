@@ -10,9 +10,9 @@ Capas:
   3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph con saneamiento de rutas.
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
-  6. IRReportProcessor: Especialización para IR y Entradas/Cierres con logo oficial de Orange y tablas nativas de Looker en el email.
+  6. IRReportProcessor: Especialización para IR y Entradas/Cierres con logo oficial de Orange y tablas completas de Looker (Páginas 1 y 2).
   7. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
-  8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email con contenido completo de Looker).
+  8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email con Looker completo).
 
 Autor: David González Cogolludo
 Departamento: Operaciones Orange
@@ -395,7 +395,7 @@ class BaseReportProcessor(ABC):
 
 
 # ==============================================================================
-# 6. IMPLEMENTACIÓN: REPORTE IR CON TABLAS COMPLETAS DE LOOKER EN EL EMAIL
+# 6. IMPLEMENTACIÓN: REPORTE IR CON TABLAS COMPLETAS DE LOOKER (PÁGINAS 1 Y 2)
 # ==============================================================================
 class IRReportProcessor(BaseReportProcessor):
     def __init__(self, table_name: str):
@@ -498,10 +498,12 @@ class IRReportProcessor(BaseReportProcessor):
 
     def transform_data(self, raw_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Calcula las 3 estructuras exactas de Looker a partir de las filas de BigQuery:
+        Calcula las estructuras completas de Looker Studio (Páginas 1 y 2):
           1. looker_ir_contratas: Tabla 1 de Looker (Recibidas, Realizadas, Bolsa, IR, IR Ayer).
-          2. timeline_contratas: Tabla 2 de Looker (Evolución Recibidas D-8 a D-1).
-          3. kpis_marcas: Resumen analítico por Marca (MAS MOVIL, ORANGE, KRTV) y Total Proyecto.
+          2. timeline_entradas: Tabla 2 de Looker (Evolución Recibidas D-8 a D-1).
+          3. timeline_cierres: Tabla 3 de Looker (Evolución Realizadas D-8 a D-1 - Pág 2).
+          4. citas_contratas: Tabla 4 de Looker (Detalle Citas D/D+1/D+2, Obj. Inst, % Pdte y % Pospuesto - Pág 2).
+          5. kpis_marcas: Resumen analítico por Marca (MAS MOVIL, ORANGE, KRTV) y Total Proyecto.
         """
         ir_raw = {}
         tot_ir = {
@@ -510,11 +512,23 @@ class IRReportProcessor(BaseReportProcessor):
             "bolsa": 0, "citado": 0, "real_ayer": 0
         }
 
-        timeline_raw = {}
-        tot_tl = {k: 0.0 if "media" in k else 0 for k in [
+        entradas_raw = {}
+        tot_entradas = {k: 0.0 if "media" in k else 0 for k in [
             "rec_media", "rec_max", "rec_d8", "rec_d7", "rec_d6", "rec_d5",
             "rec_d4", "rec_d3", "rec_d2", "rec_d1"
         ]}
+
+        cierres_raw = {}
+        tot_cierres = {k: 0.0 if "media" in k else 0 for k in [
+            "rea_media", "rea_max", "rea_d8", "rea_d7", "rea_d6", "rea_d5",
+            "rea_d4", "rea_d3", "rea_d2", "rea_d1"
+        ]}
+
+        citas_raw = {}
+        tot_citas = {
+            "bolsa": 0, "citado": 0, "citad1": 0, "citad2": 0,
+            "pdtecita": 0, "pospuesta": 0, "pospuesta_mm": 0
+        }
 
         marcas_agg = {}
 
@@ -545,6 +559,7 @@ class IRReportProcessor(BaseReportProcessor):
 
             cit = int(r.get("citado") or 0)
             cit1 = int(r.get("citad1") or 0)
+            cit2 = int(r.get("citad2") or 0)
             p_cita = int(r.get("pdtecita") or 0)
             posp = int(r.get("pospuesta") or 0)
             posp_mm = int(r.get("pospuesta_mm") or 0)
@@ -571,12 +586,10 @@ class IRReportProcessor(BaseReportProcessor):
             ir_raw[c]["rec_max"] = max(ir_raw[c]["rec_max"], rec_max)
             ir_raw[c]["rec_d2"] += rec_2
             ir_raw[c]["rec_d1"] += rec_1
-
             ir_raw[c]["rea_media"] += rea_m
             ir_raw[c]["rea_max"] = max(ir_raw[c]["rea_max"], rea_max)
             ir_raw[c]["rea_d2"] += rea_2
             ir_raw[c]["rea_d1"] += rea_1
-
             ir_raw[c]["bolsa"] += b
             ir_raw[c]["citado"] += cit
             ir_raw[c]["real_ayer"] += rea_1
@@ -594,21 +607,56 @@ class IRReportProcessor(BaseReportProcessor):
             tot_ir["real_ayer"] += rea_1
 
             # 2. Agrupación Looker Tabla Entradas (D-8 a D-1)
-            if c not in timeline_raw:
-                timeline_raw[c] = {k: 0.0 if "media" in k else 0 for k in tot_tl.keys()}
-
-            timeline_raw[c]["rec_media"] += rec_m
-            timeline_raw[c]["rec_max"] = max(timeline_raw[c]["rec_max"], rec_max)
-            tot_tl["rec_media"] += rec_m
-            tot_tl["rec_max"] = max(tot_tl["rec_max"], rec_max)
+            if c not in entradas_raw:
+                entradas_raw[c] = {k: 0.0 if "media" in k else 0 for k in tot_entradas.keys()}
+            entradas_raw[c]["rec_media"] += rec_m
+            entradas_raw[c]["rec_max"] = max(entradas_raw[c]["rec_max"], rec_max)
+            tot_entradas["rec_media"] += rec_m
+            tot_entradas["rec_max"] = max(tot_entradas["rec_max"], rec_max)
 
             for d_idx in range(1, 9):
                 k = f"rec_d{d_idx}"
                 v = int(r.get(k) or 0)
-                timeline_raw[c][k] += v
-                tot_tl[k] += v
+                entradas_raw[c][k] += v
+                tot_entradas[k] += v
 
-            # 3. Agrupación por Grupo de Marca
+            # 3. Agrupación Looker Tabla Cierres (D-8 a D-1 - Pág 2)
+            if c not in cierres_raw:
+                cierres_raw[c] = {k: 0.0 if "media" in k else 0 for k in tot_cierres.keys()}
+            cierres_raw[c]["rea_media"] += rea_m
+            cierres_raw[c]["rea_max"] = max(cierres_raw[c]["rea_max"], rea_max)
+            tot_cierres["rea_media"] += rea_m
+            tot_cierres["rea_max"] = max(tot_cierres["rea_max"], rea_max)
+
+            for d_idx in range(1, 9):
+                k = f"rea_d{d_idx}"
+                v = int(r.get(k) or 0)
+                cierres_raw[c][k] += v
+                tot_cierres[k] += v
+
+            # 4. Agrupación Looker Tabla Citas y Calidad de Bolsa (Pág 2)
+            if c not in citas_raw:
+                citas_raw[c] = {
+                    "bolsa": 0, "citado": 0, "citad1": 0, "citad2": 0,
+                    "pdtecita": 0, "pospuesta": 0, "pospuesta_mm": 0
+                }
+            citas_raw[c]["bolsa"] += b
+            citas_raw[c]["citado"] += cit
+            citas_raw[c]["citad1"] += cit1
+            citas_raw[c]["citad2"] += cit2
+            citas_raw[c]["pdtecita"] += p_cita
+            citas_raw[c]["pospuesta"] += posp
+            citas_raw[c]["pospuesta_mm"] += posp_mm
+
+            tot_citas["bolsa"] += b
+            tot_citas["citado"] += cit
+            tot_citas["citad1"] += cit1
+            tot_citas["citad2"] += cit2
+            tot_citas["pdtecita"] += p_cita
+            tot_citas["pospuesta"] += posp
+            tot_citas["pospuesta_mm"] += posp_mm
+
+            # 5. Agrupación por Grupo de Marca
             if g not in marcas_agg:
                 marcas_agg[g] = {
                     "bolsa": 0, "rec_media": 0.0, "rea_media": 0.0,
@@ -663,13 +711,60 @@ class IRReportProcessor(BaseReportProcessor):
         }
 
         # Formatear Tabla Entradas de Looker
-        timeline_contratas = {
+        timeline_entradas = {
             c: {k: self._fmt(round(v) if "media" in k else v) for k, v in data.items()}
-            for c, data in sorted(timeline_raw.items())
+            for c, data in sorted(entradas_raw.items())
         }
-        total_timeline = {
+        total_entradas = {
             k: self._fmt(round(v) if "media" in k else v)
-            for k, v in tot_tl.items()
+            for k, v in tot_entradas.items()
+        }
+
+        # Formatear Tabla Cierres de Looker (Pág 2)
+        timeline_cierres = {
+            c: {k: self._fmt(round(v) if "media" in k else v) for k, v in data.items()}
+            for c, data in sorted(cierres_raw.items())
+        }
+        total_cierres = {
+            k: self._fmt(round(v) if "media" in k else v)
+            for k, v in tot_cierres.items()
+        }
+
+        # Formatear Tabla Citas y Calidad de Bolsa de Looker (Pág 2)
+        citas_contratas = {}
+        for c, d in sorted(citas_raw.items()):
+            ir_prev = (d["bolsa"] / d["citado"]) if d["citado"] > 0 else 0
+            n_inst = round(d["bolsa"] / 2.5)
+            per_pdte = (100 * d["pdtecita"] / d["bolsa"]) if d["bolsa"] > 0 else 0
+            den_posp = d["bolsa"] + d["pospuesta_mm"]
+            per_posp = (100 * d["pospuesta"] / den_posp) if den_posp > 0 else 0
+
+            citas_contratas[c] = {
+                "bolsa": self._fmt(d["bolsa"]),
+                "citado": self._fmt(d["citado"]),
+                "citad1": self._fmt(d["citad1"]),
+                "citad2": self._fmt(d["citad2"]),
+                "ir_previsto": self._fmt(ir_prev, 2),
+                "n_inst_bjetivo": self._fmt(n_inst),
+                "per_pdte_cita": self._fmt(per_pdte, 1),
+                "per_pospuesto": self._fmt(per_posp, 1)
+            }
+
+        tot_ir_prev = (tot_citas["bolsa"] / tot_citas["citado"]) if tot_citas["citado"] > 0 else 0
+        tot_n_inst = round(tot_citas["bolsa"] / 2.5)
+        tot_per_pdte = (100 * tot_citas["pdtecita"] / tot_citas["bolsa"]) if tot_citas["bolsa"] > 0 else 0
+        tot_den_posp = tot_citas["bolsa"] + tot_citas["pospuesta_mm"]
+        tot_per_posp = (100 * tot_citas["pospuesta"] / tot_den_posp) if tot_den_posp > 0 else 0
+
+        total_citas = {
+            "bolsa": self._fmt(tot_citas["bolsa"]),
+            "citado": self._fmt(tot_citas["citado"]),
+            "citad1": self._fmt(tot_citas["citad1"]),
+            "citad2": self._fmt(tot_citas["citad2"]),
+            "ir_previsto": self._fmt(tot_ir_prev, 2),
+            "n_inst_bjetivo": self._fmt(tot_n_inst),
+            "per_pdte_cita": self._fmt(tot_per_pdte, 1),
+            "per_pospuesto": self._fmt(tot_per_posp, 1)
         }
 
         # Formatear Resumen por Marca
@@ -694,7 +789,7 @@ class IRReportProcessor(BaseReportProcessor):
         total_global = {
             "bolsa": self._fmt(tot_bolsa_g),
             "rec_media": self._fmt(round(tot_rec_media_g)),
-            "rec_d1": self._fmt(tot_tl["rec_d1"]),
+            "rec_d1": self._fmt(tot_entradas["rec_d1"]),
             "rea_media": self._fmt(round(tot_rea_media_g)),
             "rea_d1": self._fmt(tot_rea_d1_g),
             "citado": self._fmt(tot_citado_g),
@@ -709,8 +804,12 @@ class IRReportProcessor(BaseReportProcessor):
         return {
             "looker_ir_contratas": looker_ir_contratas,
             "total_looker_ir": total_looker_ir,
-            "timeline_contratas": timeline_contratas,
-            "total_timeline": total_timeline,
+            "timeline_entradas": timeline_entradas,
+            "total_entradas": total_entradas,
+            "timeline_cierres": timeline_cierres,
+            "total_cierres": total_cierres,
+            "citas_contratas": citas_contratas,
+            "total_citas": total_citas,
             "kpis_marcas": kpis_marcas,
             "total_global": total_global
         }
@@ -962,13 +1061,15 @@ class IRReportProcessor(BaseReportProcessor):
         sharepoint_web_url: str
     ) -> str:
         """
-        Renderiza el cuerpo HTML del correo con la maquetación nativa de Looker:
+        Renderiza el cuerpo HTML del correo con la maquetación nativa de Looker Studio (Páginas 1 y 2):
           - Logo corporativo oficial Orange.
           - Acceso directo a SharePoint.
           - Tarjetas ejecutivas KPI (IR y Bolsa por Marca y Total).
-          - TABLA 1: Looker IR oficial (Recibidas, Realizadas, Bolsa, IR, IR Ayer, Citados).
-          - TABLA 2: Looker Entradas y Cierres (Media, Max, D-8 a D-1).
-          - TABLA 3: Resumen de Stock, Citas y Calidad de Bolsa por Marca.
+          - TABLA 1 (Looker Pág. 1): Cuadro de Mando IR oficial (Recibidas, Realizadas, Bolsa, IR, IR Ayer, Citados).
+          - TABLA 2 (Looker Pág. 1): Entradas (Evolución Recibidas D-8 a D-1 por Contrata).
+          - TABLA 3 (Looker Pág. 2): Cierres (Evolución Realizadas D-8 a D-1 por Contrata).
+          - TABLA 4 (Looker Pág. 2): Citas, Capacidad y Calidad de Bolsa por Contrata (Citados D/D+1/D+2, Obj. Inst, % Pdte y % Pospuesto).
+          - TABLA 5: Resumen Consolidado por Grupo de Marcas.
         """
         template_str = """
         <!DOCTYPE html>
@@ -1065,10 +1166,10 @@ class IRReportProcessor(BaseReportProcessor):
           </table>
 
           <!-- ================================================================= -->
-          <!-- 1. TABLA NATIVA DE LOOKER: CUADRO DE MANDO IR                   -->
+          <!-- 1. TABLA NATIVA DE LOOKER (PÁG 1): CUADRO DE MANDO IR             -->
           <!-- ================================================================= -->
           <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
-            1. Cuadro de Mando IR (Índice de Rotación por Contrata) — Informe Looker Studio
+            1. Cuadro de Mando IR (Índice de Rotación por Contrata) — Looker Studio (Pág. 1)
           </div>
           <table width="100%" cellpadding="5" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
             <thead>
@@ -1125,10 +1226,10 @@ class IRReportProcessor(BaseReportProcessor):
           </table>
 
           <!-- ================================================================= -->
-          <!-- 2. TABLA NATIVA DE LOOKER: ENTRADAS Y CIERRES (D-8 A D-1)         -->
+          <!-- 2. TABLA NATIVA DE LOOKER (PÁG 1): ENTRADAS (D-8 A D-1)           -->
           <!-- ================================================================= -->
           <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
-            2. Entradas y Cierres (Evolución Diaria de Recibidas D-8 a D-1 por Contrata)
+            2. Entradas (Evolución Diaria de Recibidas D-8 a D-1 por Contrata) — Looker Studio (Pág. 1)
           </div>
           <table width="100%" cellpadding="5" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
             <thead>
@@ -1147,7 +1248,7 @@ class IRReportProcessor(BaseReportProcessor):
               </tr>
             </thead>
             <tbody>
-              {% for contrata, cdata in timeline_contratas.items() %}
+              {% for contrata, cdata in timeline_entradas.items() %}
               <tr style="border-bottom: 1px solid #f8eee7;">
                 <td align="left" style="padding: 6px 10px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
                 <td style="padding: 6px 6px; font-weight: 600;">{{ cdata.rec_media }}</td>
@@ -1164,25 +1265,127 @@ class IRReportProcessor(BaseReportProcessor):
               {% endfor %}
               <tr style="background-color: #fffdf9; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
                 <td align="left" style="padding: 8px 10px;">Total</td>
-                <td style="padding: 8px 6px;">{{ total_timeline.rec_media }}</td>
-                <td style="padding: 8px 6px;">{{ total_timeline.rec_max }}</td>
-                <td style="padding: 8px 6px;">{{ total_timeline.rec_d8 }}</td>
-                <td style="padding: 8px 6px;">{{ total_timeline.rec_d7 }}</td>
-                <td style="padding: 8px 6px;">{{ total_timeline.rec_d6 }}</td>
-                <td style="padding: 8px 6px;">{{ total_timeline.rec_d5 }}</td>
-                <td style="padding: 8px 6px;">{{ total_timeline.rec_d4 }}</td>
-                <td style="padding: 8px 6px;">{{ total_timeline.rec_d3 }}</td>
-                <td style="padding: 8px 6px;">{{ total_timeline.rec_d2 }}</td>
-                <td style="padding: 8px 6px; background-color: #fef08a; color: #0f172a;">{{ total_timeline.rec_d1 }}</td>
+                <td style="padding: 8px 6px;">{{ total_entradas.rec_media }}</td>
+                <td style="padding: 8px 6px;">{{ total_entradas.rec_max }}</td>
+                <td style="padding: 8px 6px;">{{ total_entradas.rec_d8 }}</td>
+                <td style="padding: 8px 6px;">{{ total_entradas.rec_d7 }}</td>
+                <td style="padding: 8px 6px;">{{ total_entradas.rec_d6 }}</td>
+                <td style="padding: 8px 6px;">{{ total_entradas.rec_d5 }}</td>
+                <td style="padding: 8px 6px;">{{ total_entradas.rec_d4 }}</td>
+                <td style="padding: 8px 6px;">{{ total_entradas.rec_d3 }}</td>
+                <td style="padding: 8px 6px;">{{ total_entradas.rec_d2 }}</td>
+                <td style="padding: 8px 6px; background-color: #fef08a; color: #0f172a;">{{ total_entradas.rec_d1 }}</td>
               </tr>
             </tbody>
           </table>
 
           <!-- ================================================================= -->
-          <!-- 3. RESUMEN EJECUTIVO: GRUPOS DE MARCAS Y CALIDAD DE BOLSA        -->
+          <!-- 3. TABLA NATIVA DE LOOKER (PÁG 2): CIERRES (D-8 A D-1)            -->
           <!-- ================================================================= -->
           <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
-            3. Resumen Consolidado por Grupo de Marcas (Stock, Citas y Pospuesto)
+            3. Cierres (Evolución Diaria de Realizadas D-8 a D-1 por Contrata) — Looker Studio (Pág. 2)
+          </div>
+          <table width="100%" cellpadding="5" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
+            <thead>
+              <tr style="background-color: #f1f5f9; border-bottom: 2px solid #94a3b8; color: #334155;">
+                <th align="left" style="padding: 8px 10px; color: #0f172a; font-weight: 700;">Contrata</th>
+                <th style="padding: 8px 6px; font-weight: 700;">Media</th>
+                <th style="padding: 8px 6px; font-weight: 700;">Max</th>
+                <th style="padding: 8px 6px;">D-8</th>
+                <th style="padding: 8px 6px;">D-7</th>
+                <th style="padding: 8px 6px;">D-6</th>
+                <th style="padding: 8px 6px;">D-5</th>
+                <th style="padding: 8px 6px;">D-4</th>
+                <th style="padding: 8px 6px;">D-3</th>
+                <th style="padding: 8px 6px;">D-2</th>
+                <th style="padding: 8px 6px; background-color: #e2e8f0; font-weight: 700; color: #0f172a;">D-1</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for contrata, cdata in timeline_cierres.items() %}
+              <tr style="border-bottom: 1px solid #f1f5f9;">
+                <td align="left" style="padding: 6px 10px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
+                <td style="padding: 6px 6px; font-weight: 600;">{{ cdata.rea_media }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.rea_max }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.rea_d8 }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.rea_d7 }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.rea_d6 }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.rea_d5 }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.rea_d4 }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.rea_d3 }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.rea_d2 }}</td>
+                <td style="padding: 6px 6px; background-color: #f8fafc; font-weight: 700; color: #0f172a;">{{ cdata.rea_d1 }}</td>
+              </tr>
+              {% endfor %}
+              <tr style="background-color: #0f172a; font-weight: 800; border-top: 2px solid #334155; color: #ffffff;">
+                <td align="left" style="padding: 8px 10px; color: #ffffff;">Total</td>
+                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_media }}</td>
+                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_max }}</td>
+                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d8 }}</td>
+                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d7 }}</td>
+                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d6 }}</td>
+                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d5 }}</td>
+                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d4 }}</td>
+                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d3 }}</td>
+                <td style="padding: 8px 6px; color: #ffffff;">{{ total_cierres.rea_d2 }}</td>
+                <td style="padding: 8px 6px; background-color: #334155; color: #fef08a;">{{ total_cierres.rea_d1 }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- ================================================================= -->
+          <!-- 4. TABLA NATIVA DE LOOKER (PÁG 2): ESTADO DE CITAS Y CALIDAD      -->
+          <!-- ================================================================= -->
+          <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
+            4. Estado de Citas, Capacidad y Calidad de Bolsa por Contrata — Looker Studio (Pág. 2)
+          </div>
+          <table width="100%" cellpadding="5" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #ebdcd0; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 26px; border-collapse: collapse;">
+            <thead>
+              <tr style="background-color: #fff8f3; border-bottom: 2px solid #ffcc99; color: #475569;">
+                <th align="left" style="padding: 8px 10px; color: #0f172a; font-weight: 700;">Contrata</th>
+                <th style="padding: 8px 8px; font-weight: 800; color: #0f172a;">Bolsa</th>
+                <th style="padding: 8px 6px;">Citado D</th>
+                <th style="padding: 8px 6px;">Cita D+1</th>
+                <th style="padding: 8px 6px;">Cita D+2</th>
+                <th style="padding: 8px 6px; background-color: #fff3e6; font-weight: 700; color: #0f172a;">IR Previsto</th>
+                <th style="padding: 8px 6px; font-weight: 700;">Obj. Inst</th>
+                <th style="padding: 8px 6px;">% Pdte Cita</th>
+                <th style="padding: 8px 6px;">% Pospuesto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for contrata, cdata in citas_contratas.items() %}
+              <tr style="border-bottom: 1px solid #f8eee7;">
+                <td align="left" style="padding: 6px 10px; font-weight: 600; color: #1e293b;">{{ contrata }}</td>
+                <td style="padding: 6px 8px; font-weight: 800; color: #0f172a;">{{ cdata.bolsa }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.citado }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.citad1 }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.citad2 }}</td>
+                <td style="padding: 6px 6px; background-color: #fffdf5; font-weight: 700; color: #0f172a;">{{ cdata.ir_previsto }}</td>
+                <td style="padding: 6px 6px; font-weight: 700;">{{ cdata.n_inst_bjetivo }}</td>
+                <td style="padding: 6px 6px;">{{ cdata.per_pdte_cita }}%</td>
+                <td style="padding: 6px 6px;">{{ cdata.per_pospuesto }}%</td>
+              </tr>
+              {% endfor %}
+              <tr style="background-color: #fffdf9; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
+                <td align="left" style="padding: 8px 10px;">Total</td>
+                <td style="padding: 8px 8px; color: #0f172a;">{{ total_citas.bolsa }}</td>
+                <td style="padding: 8px 6px;">{{ total_citas.citado }}</td>
+                <td style="padding: 8px 6px;">{{ total_citas.citad1 }}</td>
+                <td style="padding: 8px 6px;">{{ total_citas.citad2 }}</td>
+                <td style="padding: 8px 6px; background-color: #fef08a; color: #0f172a; font-weight: 900;">{{ total_citas.ir_previsto }}</td>
+                <td style="padding: 8px 6px; font-weight: 900;">{{ total_citas.n_inst_bjetivo }}</td>
+                <td style="padding: 8px 6px;">{{ total_citas.per_pdte_cita }}%</td>
+                <td style="padding: 8px 6px;">{{ total_citas.per_pospuesto }}%</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <!-- ================================================================= -->
+          <!-- 5. RESUMEN EJECUTIVO: GRUPOS DE MARCAS                            -->
+          <!-- ================================================================= -->
+          <div style="font-size: 13.5px; font-weight: 800; color: #0f172a; margin-bottom: 8px;">
+            5. Resumen Consolidado por Grupo de Marcas (Stock, Citas y Pospuesto)
           </div>
           <table width="100%" cellpadding="6" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; text-align: right; margin-bottom: 22px; border-collapse: collapse;">
             <thead>
@@ -1240,7 +1443,7 @@ class IRReportProcessor(BaseReportProcessor):
 
           <!-- PIE DE CORREO -->
           <p style="font-size: 11px; color: #64748b; margin-top: 18px; line-height: 1.5;">
-            <em>* Todas las métricas mostradas en este correo han sido calculadas directamente sobre BigQuery reproduciendo fielmente el modelo de Looker Studio.</em><br>
+            <em>* Todas las métricas mostradas en este correo han sido calculadas directamente sobre BigQuery reproduciendo fielmente el modelo de Looker Studio (Páginas 1 y 2).</em><br>
             El cuadro de mando interactivo con desglose provincial completo está disponible en <a href="{{ sharepoint_web_url }}" style="color: #ff7900; text-decoration: underline; font-weight: bold;">SharePoint Orange</a>.<br>
             Reporte automático de Operaciones Orange — Fuente: BigQuery (<code>{{ table_name }}</code>).
           </p>
@@ -1252,8 +1455,12 @@ class IRReportProcessor(BaseReportProcessor):
             fecha_ayer_formateada=target_date.strftime("%d/%m/%Y"),
             looker_ir_contratas=transformed_data["looker_ir_contratas"],
             total_looker_ir=transformed_data["total_looker_ir"],
-            timeline_contratas=transformed_data["timeline_contratas"],
-            total_timeline=transformed_data["total_timeline"],
+            timeline_entradas=transformed_data["timeline_entradas"],
+            total_entradas=transformed_data["total_entradas"],
+            timeline_cierres=transformed_data["timeline_cierres"],
+            total_cierres=transformed_data["total_cierres"],
+            citas_contratas=transformed_data["citas_contratas"],
+            total_citas=transformed_data["total_citas"],
             kpis_marcas=transformed_data["kpis_marcas"],
             total_global=transformed_data["total_global"],
             table_name=self.table_name,
@@ -1300,7 +1507,7 @@ class SMTPEmailSender:
                     logging.info("Negociando STARTTLS...")
                     smtp.starttls()
                 smtp.send_message(msg, from_addr=self.sender, to_addrs=to_addrs)
-                logging.info("¡Correo con las tablas completas de Looker enviado exitosamente!")
+                logging.info("¡Correo con las tablas completas de Looker (Págs 1 y 2) enviado exitosamente!")
         except Exception as e:
             logging.error(f"Error al enviar mensaje por SMTP: {e}")
             raise
