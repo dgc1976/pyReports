@@ -604,9 +604,33 @@ class IRReportProcessor(BaseReportProcessor):
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 14px; background: #f8fafc; font-size: 11px; color: #1e293b; }}
     .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 2px solid #ff7900; padding-bottom: 8px; }}
     .brand-container {{ display: flex; align-items: center; gap: 12px; }}
-    .orange-logo-container {{ display: flex; align-items: center; gap: 8px; }}
-    .orange-square {{ width: 30px; height: 30px; background-color: #ff7900; display: inline-block; }}
-    .orange-wordmark {{ font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; font-size: 24px; font-weight: 800; color: #000000; letter-spacing: -0.6px; }}
+    /* LOGOTIPO OFICIAL ORANGE (CAJA NARANJA CON TEXTO BLANCO INFERIOR) */
+    .orange-logo-box {{
+      width: 44px;
+      height: 44px;
+      background-color: #ff7900;
+      border-radius: 8px 0 0 0;
+      position: relative;
+      display: inline-flex;
+      align-items: flex-end;
+      padding: 0 0 5px 6px;
+      box-sizing: border-box;
+      flex-shrink: 0;
+    }}
+    .orange-logo-text {{
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.2px;
+    }}
+    .orange-logo-text sup {{
+      font-size: 5px;
+      vertical-align: super;
+      line-height: 0;
+      margin-left: 1px;
+    }}
     .header h1 {{ margin: 0; font-size: 16px; color: #0f172a; font-weight: 800; }}
     .header h1 span {{ color: #ff7900; }}
     .filters-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; background: #ffffff; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; }}
@@ -627,9 +651,8 @@ class IRReportProcessor(BaseReportProcessor):
 <body>
   <div class="header">
     <div class="brand-container">
-      <div class="orange-logo-container">
-        <span class="orange-square"></span>
-        <span class="orange-wordmark">orange</span>
+      <div class="orange-logo-box">
+        <span class="orange-logo-text">orange<sup>TM</sup></span>
       </div>
       <h1 style="border-left: 2px solid #cbd5e1; padding-left: 12px; margin-left: 4px;">
         Cuadro de Mando IR y Operaciones ({date_es})
@@ -816,23 +839,31 @@ class IRReportProcessor(BaseReportProcessor):
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 18px;">
             <tr>
               <td valign="middle">
-                <!-- LOGO OFICIAL ORANGE (CUADRADO SÓLIDO + WORDMARK) -->
+                <!-- LOGO OFICIAL ORANGE (CAJA NARANJA CON TEXTO BLANCO INFERIOR) -->
                 <table cellpadding="0" cellspacing="0" border="0">
                   <tr>
-                    <td style="width: 32px; height: 32px; background-color: #ff7900; line-height: 0; font-size: 0;" valign="middle">
-                      &nbsp;
+                    <td valign="middle">
+                      <table cellpadding="0" cellspacing="0" border="0" style="width: 44px; height: 44px; background-color: #ff7900; border-radius: 8px 0 0 0;">
+                        <tr>
+                          <td style="height: 27px; line-height: 0; font-size: 0;">&nbsp;</td>
+                        </tr>
+                        <tr>
+                          <td style="height: 17px; padding-left: 5px; padding-bottom: 4px; vertical-align: bottom;">
+                            <span style="color: #ffffff; font-family: Helvetica, Arial, sans-serif; font-size: 10px; font-weight: 800; line-height: 1; letter-spacing: -0.2px;">orange<sup style="font-size: 5px; vertical-align: super; line-height: 0;">TM</sup></span>
+                          </td>
+                        </tr>
+                      </table>
                     </td>
-                    <td style="padding-left: 10px; vertical-align: middle;">
-                      <span style="font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 26px; font-weight: 800; color: #000000; letter-spacing: -0.6px; line-height: 1;">orange</span>
+                    <td style="padding-left: 12px; vertical-align: middle;">
+                      <h2 style="margin: 0; font-size: 19px; font-weight: 800; color: #0f172a; text-transform: uppercase;">
+                        Entradas y Cierres
+                      </h2>
+                      <p style="margin: 3px 0 0 0; font-size: 12.5px; color: #64748b;">
+                        Seguimiento Operativo de Órdenes Recibidas, Producción y Bolsa — Orange Operaciones
+                      </p>
                     </td>
                   </tr>
                 </table>
-                <h2 style="margin: 10px 0 0 0; font-size: 19px; font-weight: 800; color: #0f172a; text-transform: uppercase;">
-                  Entradas y Cierres
-                </h2>
-                <p style="margin: 4px 0 0 0; font-size: 13px; color: #64748b;">
-                  Seguimiento Operativo de Órdenes Recibidas, Producción y Bolsa — Orange Operaciones
-                </p>
               </td>
               <td align="right" valign="top">
                 <span style="background-color: #0f172a; color: #ffffff; padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 700;">
