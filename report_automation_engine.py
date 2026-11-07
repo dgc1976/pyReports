@@ -235,7 +235,7 @@ class ConfigManager:
         "reports": {
             "ir": {
                 "subject_prefix": "Informe Diario Entradas y Cierres / IR",
-                "send_attachment": false,
+                "send_attachment": False,
                 "local_output_dir": r"D:\Automaticos\Robots\Outputs"
             }
         },
@@ -247,7 +247,7 @@ class ConfigManager:
     }
 
     def __init__(self, config_path: Optional[str] = None):
-        self.config = self.DEFAULT_CONFIG.copy()
+        self.config = json.loads(json.dumps(self.DEFAULT_CONFIG))
 
         # 1. Cargar fichero JSON si existe
         if config_path and os.path.exists(config_path):
