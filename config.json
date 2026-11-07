@@ -4,10 +4,8 @@
     "dataset_table_ir": "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod"
   },
   "sharepoint": {
-    "tenant_id": "c10a36d8-2981-4b7b-9b89-2ef59365493a",
-    "client_id": "33d7cd8b-6605-4aa5-8610-0481701b3bc9",
-    "client_secret": "r5N8Q~z~Iv2XaOMdIm-9R1Qm-OS.Nb3tIWLLZaVv",
-    "host": "yoigo1.sharepoint.com",
+    "credentials_ini_path": "D:\\Automaticos\\Talend\\Sharepoint\\config.ini",
+    "host": "orangees.sharepoint.com",
     "site_name": "TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE",
     "target_folder": "Documentos compartidos/Documentos/Extraciones Datos Informes/Informes",
     "web_url_template": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/Informes/{file_name}?web=1"

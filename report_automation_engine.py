@@ -5,7 +5,7 @@ Framework de Automatización de Reportes Operativos - MASORANGE
 Diseño: Programación Orientada a Objetos (POO) & Arquitectura Modular por Capas.
 
 Capas:
-  1. ConfigManager: Carga de configuración JSON y merge con argumentos CLI.
+  1. ConfigManager: Carga configuración JSON y lee credenciales de D:\\Automaticos\\Talend\\Sharepoint\\config.ini.
   2. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph para SharePoint.
   3. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   4. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
@@ -24,6 +24,7 @@ import time
 import logging
 import smtplib
 import argparse
+import configparser
 import urllib.parse
 from abc import ABC, abstractmethod
 from datetime import date, timedelta
@@ -161,7 +162,7 @@ class SharePointClient:
         logging.info(f"Subiendo a SharePoint '{file_name}' ({file_size} bytes) a carpeta '{target_folder}'...")
 
         if file_size > 4 * 1024 * 1024:
-            # Subida por bloques para archivos grandes
+            # Subida por bloques para archivos grandes (> 4MB)
             url = self.build_url(target_folder, file_name, "/createUploadSession")
             resp = with_retries(
                 self.session, "POST", url,
@@ -188,7 +189,7 @@ class SharePointClient:
                     bytes_uploaded += len(chunk)
                     logging.info(f"Progreso subida: {bytes_uploaded}/{file_size} bytes ({(bytes_uploaded / file_size) * 100:.1f}%)")
         else:
-            # Subida directa en una sola petición
+            # Subida directa en una sola petición (< 4MB)
             url = self.build_url(target_folder, file_name, "/content")
             with open(local_file_path, "rb") as f:
                 data = f.read()
@@ -200,10 +201,13 @@ class SharePointClient:
 
 
 # ==============================================================================
-# 3. GESTOR DE CONFIGURACIÓN
+# 3. GESTOR DE CONFIGURACIÓN (CON CARGA DESDE CONFIG.INI)
 # ==============================================================================
 class ConfigManager:
-    """Gestiona la configuración combinando defaults, fichero JSON y argumentos CLI."""
+    """
+    Gestiona la configuración combinando defaults, fichero JSON,
+    fichero externo config.ini (Talend) y argumentos CLI.
+    """
 
     DEFAULT_CONFIG = {
         "bigquery": {
@@ -211,6 +215,7 @@ class ConfigManager:
             "dataset_table_ir": "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod"
         },
         "sharepoint": {
+            "credentials_ini_path": r"D:\Automaticos\Talend\Sharepoint\config.ini",
             "tenant_id": "",
             "client_id": "",
             "client_secret": "",
@@ -230,7 +235,7 @@ class ConfigManager:
         "reports": {
             "ir": {
                 "subject_prefix": "Informe Diario Entradas y Cierres / IR",
-                "send_attachment": False,
+                "send_attachment": false,
                 "local_output_dir": r"D:\Automaticos\Robots\Outputs"
             }
         },
@@ -243,10 +248,15 @@ class ConfigManager:
 
     def __init__(self, config_path: Optional[str] = None):
         self.config = self.DEFAULT_CONFIG.copy()
+
+        # 1. Cargar fichero JSON si existe
         if config_path and os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
                 self._deep_update(self.config, loaded)
+
+        # 2. Cargar credenciales desde D:\Automaticos\Talend\Sharepoint\config.ini
+        self._load_credentials_from_ini()
 
     def _deep_update(self, base: dict, update: dict):
         for k, v in update.items():
@@ -254,6 +264,38 @@ class ConfigManager:
                 self._deep_update(base[k], v)
             else:
                 base[k] = v
+
+    def _load_credentials_from_ini(self):
+        """Lee tenant_id, client_id, client_secret y site de config.ini."""
+        ini_path = self.config["sharepoint"].get("credentials_ini_path", r"D:\Automaticos\Talend\Sharepoint\config.ini")
+        if os.path.exists(ini_path):
+            logging.info(f"Cargando credenciales de Azure AD desde: '{ini_path}'")
+            try:
+                ini_parser = configparser.ConfigParser()
+                ini_parser.read(ini_path, encoding="utf-8")
+
+                section = "general" if "general" in ini_parser else ("sharepoint" if "sharepoint" in ini_parser else None)
+                if section:
+                    sec = ini_parser[section]
+                    if "tenant_id" in sec and sec["tenant_id"]:
+                        self.config["sharepoint"]["tenant_id"] = sec["tenant_id"].strip()
+                    if "client_id" in sec and sec["client_id"]:
+                        self.config["sharepoint"]["client_id"] = sec["client_id"].strip()
+                    if "client_secret" in sec and sec["client_secret"]:
+                        self.config["sharepoint"]["client_secret"] = sec["client_secret"].strip()
+                    if "host" in sec and sec["host"]:
+                        self.config["sharepoint"]["host"] = sec["host"].strip()
+                    if "site" in sec and sec["site"]:
+                        self.config["sharepoint"]["site_name"] = sec["site"].strip()
+                    elif "site_name" in sec and sec["site_name"]:
+                        self.config["sharepoint"]["site_name"] = sec["site_name"].strip()
+                    logging.info("Credenciales de SharePoint cargadas exitosamente desde config.ini.")
+                else:
+                    logging.warning(f"No se encontró la sección [general] en {ini_path}")
+            except Exception as e:
+                logging.error(f"Error al leer credenciales desde {ini_path}: {e}")
+        else:
+            logging.warning(f"Fichero de credenciales INI no encontrado en '{ini_path}'.")
 
     def override_from_args(self, args: argparse.Namespace):
         if getattr(args, "to", None):
@@ -264,6 +306,9 @@ class ConfigManager:
             self.config["logging"]["log_dir"] = args.log_dir
         if getattr(args, "sp_folder", None):
             self.config["sharepoint"]["target_folder"] = args.sp_folder
+        if getattr(args, "sp_ini", None):
+            self.config["sharepoint"]["credentials_ini_path"] = args.sp_ini
+            self._load_credentials_from_ini()
 
 
 # ==============================================================================
@@ -921,7 +966,7 @@ class ReportPipeline:
             use_tls=self.cfg["smtp"]["use_tls"]
         )
 
-        # Inicialización del cliente SharePoint
+        # Inicialización del cliente SharePoint con credenciales cargadas de config.ini
         sp_cfg = self.cfg["sharepoint"]
         self.sp_client = None
         if sp_cfg.get("tenant_id") and sp_cfg.get("client_id") and sp_cfg.get("client_secret"):
@@ -939,7 +984,7 @@ class ReportPipeline:
             except Exception as e:
                 logging.error(f"No se pudo inicializar SharePointClient: {e}")
         else:
-            logging.warning("Credenciales de SharePoint incompletas en config.json. Se omitirá la subida a Graph.")
+            logging.warning("Credenciales de SharePoint ausentes o incompletas en config.ini. Se omitirá la subida a Graph.")
 
         self.processors: Dict[str, BaseReportProcessor] = {}
         self._register_default_processors()
@@ -1009,6 +1054,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--cc", default=None, help="Copias separadas por coma")
     parser.add_argument("--log-dir", default=None, help="Directorio de logs")
     parser.add_argument("--sp-folder", default=None, help="Carpeta destino en SharePoint")
+    parser.add_argument("--sp-ini", default=None, help="Ruta al archivo config.ini de SharePoint (Talend)")
     parser.add_argument("--no-email", action="store_true", help="Generar y subir a SharePoint sin enviar correo")
     return parser.parse_args()
 
@@ -1045,7 +1091,7 @@ def main():
     else:
         target_date = date.today() - timedelta(days=1)
 
-    # Ejecución
+    # Ejecución del pipeline
     pipeline = ReportPipeline(config_mgr)
     pipeline.run(report_key=args.report, target_date=target_date, skip_email=args.no_email)
 
