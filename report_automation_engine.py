@@ -10,7 +10,8 @@ Capas:
   3. GraphAuth & SharePointClient: Cliente robusto Microsoft Graph con saneamiento de rutas.
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
-  6. IRReportProcessor: Especialización para IR, Entradas/Cierres y generación de HTML.
+  6. IRReportProcessor: Especialización para IR, Entradas/Cierres con granularidad completa
+     (provincia, actividad, operación, marca, CP, técnico, huella, FTTH y zona polar).
   7. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
   8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email).
 
@@ -29,8 +30,7 @@ import configparser
 import urllib.parse
 from abc import ABC, abstractmethod
 from datetime import date, timedelta
-from pathlib import Path
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, List, Any, Optional
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -393,7 +393,7 @@ class BaseReportProcessor(ABC):
 
 
 # ==============================================================================
-# 6. IMPLEMENTACIÓN: REPORTE DE ÍNDICE DE ROTACIÓN (IR)
+# 6. IMPLEMENTACIÓN: REPORTE DE ÍNDICE DE ROTACIÓN (IR) CON MULTI-FILTRO
 # ==============================================================================
 class IRReportProcessor(BaseReportProcessor):
     def __init__(self, table_name: str):
@@ -450,9 +450,19 @@ class IRReportProcessor(BaseReportProcessor):
           WHERE fecha_referencia = '{date_str}'
         )
         SELECT 
-          brand_group AS grupo,
-          normalized_contracts AS contrata,
-          normalized_province AS provincia,
+          COALESCE(brand_group, 'OTROS') AS grupo,
+          COALESCE(normalized_contracts, 'SIN CONTRATA') AS contrata,
+          COALESCE(normalized_province, 'SIN PROVINCIA') AS provincia,
+          COALESCE(activity_group, '-') AS activity_group,
+          COALESCE(service_operation, '-') AS service_operation,
+          COALESCE(normalized_brand, '-') AS marca,
+          COALESCE(zip_code, '-') AS zip_code,
+          COALESCE(technician, '-') AS technician,
+          COALESCE(technician_name, '-') AS technician_name,
+          COALESCE(footprint, '-') AS footprint,
+          COALESCE(ftth_type, '-') AS ftth_type,
+          COALESCE(polar_zone, '-') AS polar_zone,
+
           ROUND(SUM(MediaRecibidas) / 3, 1) AS rec_media,
           MAX(max_ots) AS rec_max,
           MAX(Recibidas_D_8) AS rec_d8,
@@ -489,11 +499,10 @@ class IRReportProcessor(BaseReportProcessor):
           SUM(total_pospuesta) AS pospuesta,
           SUM(TotalPospuestaMM_KRTV) AS pospuesta_mm
         FROM TOTAL_IR
-        WHERE brand_group IS NOT NULL
-          AND normalized_contracts IS NOT NULL
-          AND normalized_province IS NOT NULL
-        GROUP BY grupo, contrata, provincia
-        ORDER BY grupo, contrata, provincia;
+        GROUP BY 
+          grupo, contrata, provincia, activity_group, service_operation, marca,
+          zip_code, technician, technician_name, footprint, ftth_type, polar_zone
+        ORDER BY grupo, contrata, provincia, activity_group, service_operation;
         """
 
     def transform_data(self, raw_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -602,19 +611,21 @@ class IRReportProcessor(BaseReportProcessor):
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>Cuadro de Mando IR - {date_es}</title>
+  <title>Cuadro de Mando IR y Operaciones - {date_es}</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; background: #f8fafc; font-size: 11.5px; color: #1e293b; }}
-    .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; border-bottom: 2px solid #ff5500; padding-bottom: 10px; }}
-    .header h1 {{ margin: 0; font-size: 18px; color: #ff5500; font-weight: 800; }}
-    .filters {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }}
-    select, input {{ padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 11.5px; }}
-    table {{ width: 100%; border-collapse: collapse; text-align: right; background: #fff; border: 1px solid #e2e8f0; }}
-    th, td {{ padding: 6px 8px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 14px; background: #f8fafc; font-size: 11px; color: #1e293b; }}
+    .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 2px solid #ff5500; padding-bottom: 8px; }}
+    .header h1 {{ margin: 0; font-size: 17px; color: #ff5500; font-weight: 800; }}
+    .filters-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 6px; margin-bottom: 12px; background: #ffffff; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0; }}
+    .filter-item label {{ display: block; font-size: 9.5px; font-weight: 700; color: #64748b; margin-bottom: 2px; text-transform: uppercase; }}
+    select, input {{ width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 10.5px; background: #fff; }}
+    .tbl-container {{ overflow-x: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; }}
+    table {{ width: 100%; border-collapse: collapse; text-align: right; }}
+    th, td {{ padding: 5px 6px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }}
     thead th {{ background: #fff8f3; color: #475569; font-weight: 700; border-bottom: 2px solid #ffcc99; }}
     .text-left {{ text-align: left; }}
-    .row-total {{ background: #fffdf9; font-weight: 800; border-top: 2px solid #ffaa66; border-bottom: 2px solid #ffaa66; color: #0f172a; }}
-    .pill {{ padding: 2px 6px; border-radius: 10px; font-weight: 700; font-size: 10.5px; display: inline-block; }}
+    .row-total {{ background: #fffdf9; font-weight: 800; border-top: 2px solid #ffaa66; border-bottom: 2px solid #ffaa66; color: #0f172a; position: sticky; bottom: 0; }}
+    .pill {{ padding: 2px 5px; border-radius: 8px; font-weight: 700; font-size: 10px; display: inline-block; }}
     .pill-green {{ background: #dcfce7; color: #15803d; }}
     .pill-amber {{ background: #fef9c3; color: #a16207; }}
     .pill-red {{ background: #fee2e2; color: #b91c1c; }}
@@ -625,29 +636,87 @@ class IRReportProcessor(BaseReportProcessor):
     <h1>Cuadro de Mando IR y Operaciones — Foto: {date_es}</h1>
     <span style="font-weight: 700; color: #64748b;">MASORANGE Operaciones</span>
   </div>
-  <div class="filters">
-    <select id="selGrupo" onchange="filterData()"><option value="TODOS">Todos los Grupos</option></select>
-    <select id="selContrata" onchange="filterData()"><option value="TODAS">Todas las Contratas</option></select>
-    <select id="selProvincia" onchange="filterData()"><option value="TODAS">Todas las Provincias</option></select>
-    <input type="text" id="txtSearch" placeholder="Buscar texto libre..." oninput="filterData()">
+
+  <!-- PANEL DE FILTROS MULTIDIMENSIONALES -->
+  <div class="filters-grid">
+    <div class="filter-item">
+      <label>Grupo</label>
+      <select id="selGrupo" onchange="filterData()"><option value="TODOS">Todos</option></select>
+    </div>
+    <div class="filter-item">
+      <label>Contrata</label>
+      <select id="selContrata" onchange="filterData()"><option value="TODAS">Todas</option></select>
+    </div>
+    <div class="filter-item">
+      <label>Provincia</label>
+      <select id="selProvincia" onchange="filterData()"><option value="TODAS">Todas</option></select>
+    </div>
+    <div class="filter-item">
+      <label>Actividad</label>
+      <select id="selActividad" onchange="filterData()"><option value="TODAS">Todas</option></select>
+    </div>
+    <div class="filter-item">
+      <label>Operación</label>
+      <select id="selOperacion" onchange="filterData()"><option value="TODAS">Todas</option></select>
+    </div>
+    <div class="filter-item">
+      <label>Marca</label>
+      <select id="selMarca" onchange="filterData()"><option value="TODAS">Todas</option></select>
+    </div>
+    <div class="filter-item">
+      <label>Huella</label>
+      <select id="selFootprint" onchange="filterData()"><option value="TODAS">Todas</option></select>
+    </div>
+    <div class="filter-item">
+      <label>Tipo FTTH</label>
+      <select id="selFtthType" onchange="filterData()"><option value="TODOS">Todos</option></select>
+    </div>
+    <div class="filter-item">
+      <label>Zona Polar</label>
+      <select id="selPolarZone" onchange="filterData()"><option value="TODAS">Todas</option></select>
+    </div>
+    <div class="filter-item" style="grid-column: span 2;">
+      <label>Búsqueda (Técnico, CP, etc.)</label>
+      <input type="text" id="txtSearch" placeholder="Escribe para buscar..." oninput="filterData()">
+    </div>
   </div>
-  <table id="tbl">
-    <thead>
-      <tr>
-        <th class="text-left">Grupo</th>
-        <th class="text-left">Contrata</th>
-        <th class="text-left">Provincia</th>
-        <th>Rec. Media</th><th>Rec. Max</th><th>Rec. D-2</th><th>Rec. D-1</th>
-        <th>Rea. Media</th><th>Rea. Max</th><th>Rea. D-2</th><th>Rea. D-1</th>
-        <th>Bolsa</th><th>IR</th><th>IR Ayer</th><th>IR Previsto</th><th>Citado D</th>
-      </tr>
-    </thead>
-    <tbody id="tb"></tbody>
-    <tfoot><tr id="tfoot" class="row-total"></tr></tfoot>
-  </table>
+
+  <div class="tbl-container">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th class="text-left">Grupo</th>
+          <th class="text-left">Contrata</th>
+          <th class="text-left">Provincia</th>
+          <th class="text-left">Marca</th>
+          <th class="text-left">Operación</th>
+          <th class="text-left">Actividad</th>
+          <th class="text-left">CP</th>
+          <th class="text-left">Técnico</th>
+          <th class="text-left">Huella</th>
+          <th class="text-left">FTTH</th>
+          <th class="text-left">Zona Polar</th>
+          <th>Rec. Media</th><th>Rec. Max</th><th>Rec. D-2</th><th>Rec. D-1</th>
+          <th>Rea. Media</th><th>Rea. Max</th><th>Rea. D-2</th><th>Rea. D-1</th>
+          <th>Bolsa</th><th>IR</th><th>IR Ayer</th><th>IR Prev.</th>
+          <th>Obj. Inst</th><th>Citado D</th><th>Cita D+1</th><th>Cita D+2</th>
+          <th>% Pdte</th><th>% Posp</th>
+        </tr>
+      </thead>
+      <tbody id="tb"></tbody>
+      <tfoot><tr id="tfoot" class="row-total"></tr></tfoot>
+    </table>
+  </div>
+
   <script>
     const data = {json_payload};
-    function fmt(n, d=0) {{ return n !== null && n !== undefined && !isNaN(n) ? Number(n).toLocaleString('es-ES', {{minimumFractionDigits:d, maximumFractionDigits:d}}) : '-'; }}
+
+    function fmt(n, d=0) {{
+      return n !== null && n !== undefined && !isNaN(n)
+        ? Number(n).toLocaleString('es-ES', {{minimumFractionDigits:d, maximumFractionDigits:d}})
+        : '-';
+    }}
+
     function getPill(ir) {{
       const v = parseFloat(ir);
       if (isNaN(v)) return '-';
@@ -655,34 +724,64 @@ class IRReportProcessor(BaseReportProcessor):
       if (v <= 4.0) return `<span class="pill pill-amber">${{fmt(v, 2)}}</span>`;
       return `<span class="pill pill-red">${{fmt(v, 2)}}</span>`;
     }}
+
+    function populateSelect(id, field) {{
+      const vals = [...new Set(data.map(d => d[field]).filter(Boolean))].sort();
+      const sel = document.getElementById(id);
+      vals.forEach(v => sel.add(new Option(v, v)));
+    }}
+
     function init() {{
-      const grupos = [...new Set(data.map(d => d.grupo).filter(Boolean))].sort();
-      const contratas = [...new Set(data.map(d => d.contrata).filter(Boolean))].sort();
-      const provincias = [...new Set(data.map(d => d.provincia).filter(Boolean))].sort();
-      grupos.forEach(g => document.getElementById('selGrupo').add(new Option(g, g)));
-      contratas.forEach(c => document.getElementById('selContrata').add(new Option(c, c)));
-      provincias.forEach(p => document.getElementById('selProvincia').add(new Option(p, p)));
+      populateSelect('selGrupo', 'grupo');
+      populateSelect('selContrata', 'contrata');
+      populateSelect('selProvincia', 'provincia');
+      populateSelect('selActividad', 'activity_group');
+      populateSelect('selOperacion', 'service_operation');
+      populateSelect('selMarca', 'marca');
+      populateSelect('selFootprint', 'footprint');
+      populateSelect('selFtthType', 'ftth_type');
+      populateSelect('selPolarZone', 'polar_zone');
       filterData();
     }}
+
     function filterData() {{
       const g = document.getElementById('selGrupo').value;
       const c = document.getElementById('selContrata').value;
       const p = document.getElementById('selProvincia').value;
+      const a = document.getElementById('selActividad').value;
+      const o = document.getElementById('selOperacion').value;
+      const m = document.getElementById('selMarca').value;
+      const f = document.getElementById('selFootprint').value;
+      const ft = document.getElementById('selFtthType').value;
+      const pz = document.getElementById('selPolarZone').value;
       const q = document.getElementById('txtSearch').value.toUpperCase();
+
       const rows = data.filter(d => 
         (g === 'TODOS' || d.grupo === g) &&
         (c === 'TODAS' || d.contrata === c) &&
         (p === 'TODAS' || d.provincia === p) &&
-        (!q || (d.grupo+d.contrata+d.provincia).toUpperCase().includes(q))
+        (a === 'TODAS' || d.activity_group === a) &&
+        (o === 'TODAS' || d.service_operation === o) &&
+        (m === 'TODAS' || d.marca === m) &&
+        (f === 'TODAS' || d.footprint === f) &&
+        (ft === 'TODOS' || d.ftth_type === ft) &&
+        (pz === 'TODAS' || d.polar_zone === pz) &&
+        (!q || (
+          (d.grupo || '') + (d.contrata || '') + (d.provincia || '') + 
+          (d.technician || '') + (d.technician_name || '') + (d.zip_code || '')
+        ).toUpperCase().includes(q))
       );
       render(rows);
     }}
+
     function render(rows) {{
       const tb = document.getElementById('tb');
       tb.innerHTML = '';
+
       let sumRecM = 0, sumRecMax = 0, sumRecD2 = 0, sumRecD1 = 0;
       let sumReaM = 0, sumReaMax = 0, sumReaD2 = 0, sumReaD1 = 0;
-      let sumBolsa = 0, sumCitado = 0;
+      let sumBolsa = 0, sumCitado = 0, sumCitaD1 = 0, sumCitaD2 = 0;
+      let sumPdteCita = 0, sumPospuesta = 0, sumPospuestaMM = 0;
 
       rows.forEach(d => {{
         sumRecM += Number(d.rec_media || 0);
@@ -697,19 +796,41 @@ class IRReportProcessor(BaseReportProcessor):
 
         sumBolsa += Number(d.bolsa || 0);
         sumCitado += Number(d.citado || 0);
+        sumCitaD1 += Number(d.citad1 || 0);
+        sumCitaD2 += Number(d.citad2 || 0);
+        sumPdteCita += Number(d.pdtecita || 0);
+        sumPospuesta += Number(d.pospuesta || 0);
+        sumPospuestaMM += Number(d.pospuesta_mm || 0);
+
+        const techLabel = d.technician_name && d.technician_name !== '-'
+          ? `${{d.technician_name}} (${{d.technician}})`
+          : d.technician;
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td class="text-left">${{d.grupo}}</td>
           <td class="text-left"><strong>${{d.contrata}}</strong></td>
           <td class="text-left">${{d.provincia}}</td>
+          <td class="text-left">${{d.marca}}</td>
+          <td class="text-left">${{d.service_operation}}</td>
+          <td class="text-left">${{d.activity_group}}</td>
+          <td class="text-left">${{d.zip_code}}</td>
+          <td class="text-left">${{techLabel}}</td>
+          <td class="text-left">${{d.footprint}}</td>
+          <td class="text-left">${{d.ftth_type}}</td>
+          <td class="text-left">${{d.polar_zone}}</td>
           <td>${{fmt(d.rec_media, 1)}}</td><td>${{fmt(d.rec_max)}}</td><td>${{fmt(d.rec_d2)}}</td><td>${{fmt(d.rec_d1)}}</td>
           <td>${{fmt(d.rea_media, 1)}}</td><td>${{fmt(d.rea_max)}}</td><td>${{fmt(d.rea_d2)}}</td><td>${{fmt(d.rea_d1)}}</td>
           <td><strong>${{fmt(d.bolsa)}}</strong></td>
           <td>${{getPill(d.ir)}}</td>
           <td>${{getPill(d.ir_ayer)}}</td>
           <td>${{fmt(d.ir_previsto, 2)}}</td>
+          <td>${{fmt(d.n_inst_bjetivo)}}</td>
           <td>${{fmt(d.citado)}}</td>
+          <td>${{fmt(d.citad1)}}</td>
+          <td>${{fmt(d.citad2)}}</td>
+          <td>${{fmt(d.per_pdte_cita, 1)}}%</td>
+          <td>${{fmt(d.per_pospuesto, 1)}}%</td>
         `;
         tb.appendChild(tr);
       }});
@@ -717,18 +838,27 @@ class IRReportProcessor(BaseReportProcessor):
       const irTot = sumReaM > 0 ? (sumBolsa / sumReaM) : 0;
       const irAyerTot = sumReaD1 > 0 ? (sumBolsa / sumReaD1) : 0;
       const irPrevTot = sumCitado > 0 ? (sumBolsa / sumCitado) : 0;
+      const nInstObjTot = Math.round(sumBolsa / 2.5);
+      const perPdteTot = sumBolsa > 0 ? (100 * sumPdteCita / sumBolsa) : 0;
+      const perPospTot = (sumBolsa + sumPospuestaMM) > 0 ? (100 * sumPospuesta / (sumBolsa + sumPospuestaMM)) : 0;
 
       document.getElementById('tfoot').innerHTML = `
-        <td class="text-left" colspan="3">TOTAL FILTRADO (${{rows.length}} registros)</td>
+        <td class="text-left" colspan="11">TOTAL FILTRADO (${{rows.length}} registros)</td>
         <td>${{fmt(sumRecM, 0)}}</td><td>${{fmt(sumRecMax)}}</td><td>${{fmt(sumRecD2)}}</td><td>${{fmt(sumRecD1)}}</td>
         <td>${{fmt(sumReaM, 0)}}</td><td>${{fmt(sumReaMax)}}</td><td>${{fmt(sumReaD2)}}</td><td>${{fmt(sumReaD1)}}</td>
         <td><strong>${{fmt(sumBolsa)}}</strong></td>
         <td>${{getPill(irTot)}}</td>
         <td>${{getPill(irAyerTot)}}</td>
         <td>${{fmt(irPrevTot, 2)}}</td>
+        <td>${{fmt(nInstObjTot)}}</td>
         <td>${{fmt(sumCitado)}}</td>
+        <td>${{fmt(sumCitaD1)}}</td>
+        <td>${{fmt(sumCitaD2)}}</td>
+        <td>${{fmt(perPdteTot, 1)}}%</td>
+        <td>${{fmt(perPospTot, 1)}}%</td>
       `;
     }}
+
     window.onload = init;
   </script>
 </body>
@@ -773,7 +903,7 @@ class IRReportProcessor(BaseReportProcessor):
                     <td valign="middle">
                       <span style="font-size: 13.5px; font-weight: 800; color: #0369a1;">🌐 Cuadro de Mando Actualizado en SharePoint</span>
                       <p style="margin: 4px 0 0 0; font-size: 12px; color: #334155;">
-                        El informe interactivo en HTML con filtros dinámicos por grupo, contrata y provincia ya está publicado:
+                        El informe interactivo con filtros detallados (provincia, técnico, CP, huella, etc.) ya está publicado:
                       </p>
                     </td>
                     <td align="right" valign="middle" style="white-space: nowrap; padding-left: 15px;">
@@ -918,7 +1048,7 @@ class IRReportProcessor(BaseReportProcessor):
           </table>
 
           <p style="font-size: 11px; color: #64748b; margin-top: 18px;">
-            <em>* Informe sin adjuntos: para evitar bloqueos perimetrales, el archivo HTML interactivo se encuentra almacenado y accesible directamente en <a href="{{ sharepoint_web_url }}" style="color: #0284c7; text-decoration: underline;">SharePoint MASORANGE</a>.</em><br>
+            <em>* Informe sin adjuntos: para evitar bloqueos perimetrales, el archivo HTML interactivo con filtros detallados se encuentra almacenado y accesible directamente en <a href="{{ sharepoint_web_url }}" style="color: #0284c7; text-decoration: underline;">SharePoint MASORANGE</a>.</em><br>
             Reporte automático de Operaciones MASORANGE — Fuente: BigQuery (<code>{{ table_name }}</code>).
           </p>
         </body>
@@ -1038,14 +1168,14 @@ class ReportPipeline:
 
         logging.info(f"=== INICIANDO PIPELINE: {report_key.upper()} (Fecha objetivo: {target_date}) ===")
 
-        # 1. Extracción BigQuery
+        # 1. Extracción BigQuery con las nuevas dimensiones agrupadas
         query = processor.build_query(target_date)
         raw_rows = self.extractor.execute_query(query)
 
         # 2. Transformación de datos para el cuerpo del correo
         transformed = processor.transform_data(raw_rows)
 
-        # 3. Generación del archivo HTML interactivo en disco (nueva ruta local)
+        # 3. Generación del archivo HTML interactivo en disco con panel de filtros
         out_dir = self.cfg["reports"][report_key].get(
             "local_output_dir",
             r"D:\Automaticos\Extraciones Datos Informes\Informes\IR"
@@ -1053,7 +1183,7 @@ class ReportPipeline:
         local_html_path = processor.generate_html_file(raw_rows, target_date, out_dir)
         file_name = os.path.basename(local_html_path)
 
-        # 4. Subida a SharePoint y captura de webUrl directa (nueva subcarpeta /IR)
+        # 4. Subida a SharePoint y captura de webUrl directa
         sp_folder = self.cfg["sharepoint"].get(
             "target_folder",
             "Documentos/Extraciones Datos Informes/Informes/IR"
@@ -1067,7 +1197,6 @@ class ReportPipeline:
         else:
             logging.warning("Se omitió la subida a SharePoint porque el cliente Graph no está disponible.")
 
-        # Si Graph devolvió la webUrl directa, la usamos; en caso contrario, usamos la plantilla corporativa
         if uploaded_url:
             sharepoint_web_url = uploaded_url
         else:
