@@ -4,7 +4,7 @@
     "dataset_table_ir": "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod"
   },
   "sharepoint": {
-    "credentials_ini_path": "D:\\\\Automaticos\\\\Talend\\\\Sharepoint\\\\config.ini",
+    "credentials_ini_path": "D:\\Automaticos\\Talend\\Sharepoint\\config.ini",
     "host": "orangees.sharepoint.com",
     "site_name": "TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE",
     "target_folder": "Documentos/Extraciones Datos Informes/Informes/IR",
@@ -24,14 +24,14 @@
   },
   "reports": {
     "ir": {
-      "subject_prefix": "Informe Diario Entradas y Cierres / IR",
+      "subject_prefix": "Orange - Informe Diario Entradas y Cierres / IR",
       "send_attachment": false,
-      "local_output_dir": "D:\\\\Automaticos\\\\Extraciones Datos Informes\\\\Informes\\\\IR"
+      "local_output_dir": "D:\\Automaticos\\Extraciones Datos Informes\\Informes\\IR"
     }
   },
   "logging": {
     "level": "INFO",
-    "log_dir": "D:\\\\Automaticos\\\\Logs\\\\reports",
+    "log_dir": "D:\\Automaticos\\Logs\\reports",
     "log_file": "report_automation.log"
   }
 }
