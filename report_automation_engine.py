@@ -55,7 +55,6 @@ def normalize_path(p: str) -> str:
         p = p.replace("//", "/")
 
     partes = p.split("/")
-    # Solo recortamos si el usuario incluyó el nombre de la biblioteca raíz
     if partes and partes[0].lower() in ("documentos compartidos", "shared documents"):
         partes = partes[1:]
     return "/".join(partes)
@@ -242,8 +241,8 @@ class ConfigManager:
             "client_secret": "",
             "host": "orangees.sharepoint.com",
             "site_name": "TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE",
-            "target_folder": "Documentos/Extraciones Datos Informes/PedidosVentahora/Envios_MM",
-            "web_url_template": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/PedidosVentahora/Envios_MM/{file_name}?csf=1&web=1"
+            "target_folder": "Documentos/Extraciones Datos Informes/Informes",
+            "web_url_template": "https://orangees.sharepoint.com/sites/TRIBUPROVISIONSQUAPBUSINESSPERFORMANCE/Documentos%20compartidos/Documentos/Extraciones%20Datos%20Informes/Informes/{file_name}?csf=1&web=1"
         },
         "smtp": {
             "server": "fsp.si.orange.es",
@@ -1050,7 +1049,7 @@ class ReportPipeline:
         file_name = os.path.basename(local_html_path)
 
         # 4. Subida a SharePoint y captura de webUrl directa
-        sp_folder = self.cfg["sharepoint"].get("target_folder", "Documentos/Extraciones Datos Informes/PedidosVentahora/Envios_MM")
+        sp_folder = self.cfg["sharepoint"].get("target_folder", "Documentos/Extraciones Datos Informes/Informes")
         uploaded_url = None
         if self.sp_client:
             try:
