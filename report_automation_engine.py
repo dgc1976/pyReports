@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Framework de Automatización de Reportes Operativos - MASORANGE
+Framework de Automatización de Reportes Operativos - Orange
 Diseño: Programación Orientada a Objetos (POO) & Arquitectura Modular por Capas.
 
 Capas:
@@ -15,7 +15,7 @@ Capas:
   8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email).
 
 Autor: David González Cogolludo
-Departamento: Operaciones MASORANGE
+Departamento: Operaciones Orange
 """
 
 import os
@@ -253,7 +253,7 @@ class ConfigManager:
         },
         "reports": {
             "ir": {
-                "subject_prefix": "Informe Diario Entradas y Cierres / IR",
+                "subject_prefix": "Orange - Informe Diario Entradas y Cierres / IR",
                 "send_attachment": False,
                 "local_output_dir": r"D:\Automaticos\Extraciones Datos Informes\Informes\IR"
             }
@@ -392,7 +392,7 @@ class BaseReportProcessor(ABC):
 
 
 # ==============================================================================
-# 6. IMPLEMENTACIÓN: REPORTE IR CON AGREGACIÓN ÁGIL (3 DIMENSIONES)
+# 6. IMPLEMENTACIÓN: REPORTE IR CON AGREGACIÓN ÁGIL Y BRANDING ORANGE
 # ==============================================================================
 class IRReportProcessor(BaseReportProcessor):
     def __init__(self, table_name: str):
@@ -599,11 +599,14 @@ class IRReportProcessor(BaseReportProcessor):
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>Cuadro de Mando IR y Operaciones - {date_es}</title>
+  <title>Orange — Cuadro de Mando IR y Operaciones ({date_es})</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 14px; background: #f8fafc; font-size: 11px; color: #1e293b; }}
-    .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 2px solid #ff5500; padding-bottom: 8px; }}
-    .header h1 {{ margin: 0; font-size: 17px; color: #ff5500; font-weight: 800; }}
+    .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 2px solid #ff7900; padding-bottom: 8px; }}
+    .brand-container {{ display: flex; align-items: center; gap: 10px; }}
+    .orange-logo-sq {{ width: 28px; height: 28px; background-color: #ff7900; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-weight: 900; color: #fff; font-size: 16px; font-family: Helvetica, Arial, sans-serif; }}
+    .header h1 {{ margin: 0; font-size: 17px; color: #000000; font-weight: 800; }}
+    .header h1 span {{ color: #ff7900; }}
     .filters-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; background: #ffffff; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0; }}
     .filter-item label {{ display: block; font-size: 10px; font-weight: 700; color: #64748b; margin-bottom: 3px; text-transform: uppercase; }}
     select, input {{ width: 100%; box-sizing: border-box; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 11px; background: #fff; }}
@@ -621,8 +624,11 @@ class IRReportProcessor(BaseReportProcessor):
 </head>
 <body>
   <div class="header">
-    <h1>Cuadro de Mando IR y Operaciones — Foto: {date_es}</h1>
-    <span style="font-weight: 700; color: #64748b;">MASORANGE Operaciones</span>
+    <div class="brand-container">
+      <div class="orange-logo-sq">o</div>
+      <h1><span>Orange</span> — Cuadro de Mando IR y Operaciones ({date_es})</h1>
+    </div>
+    <span style="font-weight: 700; color: #64748b;">Orange Operaciones</span>
   </div>
 
   <!-- PANEL DE FILTROS ÁGIL (3 DIMENSIONES) -->
@@ -799,14 +805,25 @@ class IRReportProcessor(BaseReportProcessor):
         <html>
         <head><meta charset="utf-8"></head>
         <body style="margin: 0; padding: 15px; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1e293b;">
-          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 16px;">
+          <!-- CABECERA PRINCIPAL CON LOGO DE ORANGE -->
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 18px;">
             <tr>
-              <td>
-                <h2 style="margin: 0; font-size: 19px; font-weight: 800; color: #ff5500; text-transform: uppercase;">
+              <td valign="middle">
+                <table cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td style="width: 36px; height: 36px; background-color: #ff7900; text-align: center; vertical-align: middle; border-radius: 4px;">
+                      <span style="color: #ffffff; font-family: Helvetica, Arial, sans-serif; font-size: 20px; font-weight: 900; line-height: 1;">o</span>
+                    </td>
+                    <td style="padding-left: 12px; vertical-align: middle;">
+                      <span style="font-family: Helvetica, Arial, sans-serif; font-size: 22px; font-weight: 900; color: #000000; letter-spacing: -0.5px;">orange</span>
+                    </td>
+                  </tr>
+                </table>
+                <h2 style="margin: 8px 0 0 0; font-size: 19px; font-weight: 800; color: #0f172a; text-transform: uppercase;">
                   Entradas y Cierres
                 </h2>
                 <p style="margin: 4px 0 0 0; font-size: 13px; color: #64748b;">
-                  Seguimiento Operativo de Órdenes Recibidas, Producción y Bolsa — MASORANGE
+                  Seguimiento Operativo de Órdenes Recibidas, Producción y Bolsa — Orange Operaciones
                 </p>
               </td>
               <td align="right" valign="top">
@@ -820,17 +837,17 @@ class IRReportProcessor(BaseReportProcessor):
           <!-- BANNER ACCESO DIRECTO A SHAREPOINT (SIN ADJUNTOS) -->
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">
             <tr>
-              <td style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-left: 5px solid #0284c7; border-radius: 6px; padding: 14px 18px;">
+              <td style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-left: 5px solid #ff7900; border-radius: 6px; padding: 14px 18px;">
                 <table width="100%" cellpadding="0" cellspacing="0" border="0">
                   <tr>
                     <td valign="middle">
-                      <span style="font-size: 13.5px; font-weight: 800; color: #0369a1;">🌐 Cuadro de Mando Actualizado en SharePoint</span>
+                      <span style="font-size: 13.5px; font-weight: 800; color: #0f172a;">🌐 Cuadro de Mando Actualizado en SharePoint</span>
                       <p style="margin: 4px 0 0 0; font-size: 12px; color: #334155;">
-                        El informe interactivo con filtros por Grupo, Contrata y Provincia ya está publicado:
+                        El informe interactivo con filtros por Grupo, Contrata y Provincia ya está publicado y disponible:
                       </p>
                     </td>
                     <td align="right" valign="middle" style="white-space: nowrap; padding-left: 15px;">
-                      <a href="{{ sharepoint_web_url }}" target="_blank" style="background-color: #0284c7; color: #ffffff; text-decoration: none; padding: 9px 18px; border-radius: 4px; font-size: 12px; font-weight: 700; display: inline-block;">
+                      <a href="{{ sharepoint_web_url }}" target="_blank" style="background-color: #ff7900; color: #ffffff; text-decoration: none; padding: 9px 18px; border-radius: 4px; font-size: 12px; font-weight: 700; display: inline-block;">
                         Abrir Dashboard en SharePoint &rarr;
                       </a>
                     </td>
@@ -849,7 +866,7 @@ class IRReportProcessor(BaseReportProcessor):
                 <div style="font-size: 11.5px; color: #475569;">Bolsa: <strong>{{ kpis_marcas.get('MAS MOVIL', {}).get('bolsa', '-') }}</strong></div>
               </td>
               <td width="2%">&nbsp;</td>
-              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 4px solid #0284c7; border-radius: 8px; padding: 14px;">
+              <td width="23.5%" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-top: 4px solid #ff7900; border-radius: 8px; padding: 14px;">
                 <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase;">OSP (Orange)</div>
                 <div style="font-size: 24px; font-weight: 800; color: #0f172a; margin: 4px 0;">{{ kpis_marcas.get('ORANGE', {}).get('ir', '-') }}</div>
                 <div style="font-size: 11.5px; color: #475569;">Bolsa: <strong>{{ kpis_marcas.get('ORANGE', {}).get('bolsa', '-') }}</strong></div>
@@ -905,7 +922,7 @@ class IRReportProcessor(BaseReportProcessor):
                 <td style="padding: 7px 6px; background-color: #fffdf5; font-weight: 700; color: #0f172a;">{{ cdata.rec_d1 }}</td>
               </tr>
               {% endfor %}
-              <tr style="background-color: #fffdf9; font-weight: 800; border-top: 2px solid #ffaa66; border-bottom: 2px solid #ffaa66; color: #0f172a;">
+              <tr style="background-color: #fffdf9; font-weight: 800; border-top: 2px solid #ff7900; border-bottom: 2px solid #ff7900; color: #0f172a;">
                 <td align="left" style="padding: 9px 10px;">Total</td>
                 <td style="padding: 9px 6px;">{{ total_timeline.rec_media }}</td>
                 <td style="padding: 9px 6px;">{{ total_timeline.rec_max }}</td>
@@ -971,8 +988,8 @@ class IRReportProcessor(BaseReportProcessor):
           </table>
 
           <p style="font-size: 11px; color: #64748b; margin-top: 18px;">
-            <em>* Informe sin adjuntos: para evitar bloqueos perimetrales, el archivo HTML interactivo con filtros detallados se encuentra almacenado y accesible directamente en <a href="{{ sharepoint_web_url }}" style="color: #0284c7; text-decoration: underline;">SharePoint MASORANGE</a>.</em><br>
-            Reporte automático de Operaciones MASORANGE — Fuente: BigQuery (<code>{{ table_name }}</code>).
+            <em>* Informe sin adjuntos: para evitar bloqueos perimetrales, el archivo HTML interactivo con filtros detallados se encuentra almacenado y accesible directamente en <a href="{{ sharepoint_web_url }}" style="color: #ff7900; text-decoration: underline;">SharePoint Orange</a>.</em><br>
+            Reporte automático de Operaciones Orange — Fuente: BigQuery (<code>{{ table_name }}</code>).
           </p>
         </body>
         </html>
@@ -993,7 +1010,7 @@ class IRReportProcessor(BaseReportProcessor):
 # 7. TRANSPORTE SMTP CORPORATIVO
 # ==============================================================================
 class SMTPEmailSender:
-    """Envío de correo mediante el relay interno de Orange / MASORANGE."""
+    """Envío de correo mediante el relay interno de Orange."""
 
     def __init__(self, server: str, port: int, sender: str, use_tls: bool = False):
         self.server = server
@@ -1098,7 +1115,7 @@ class ReportPipeline:
         # 2. Transformación de datos para el cuerpo del correo
         transformed = processor.transform_data(raw_rows)
 
-        # 3. Generación del archivo HTML interactivo en disco con panel de filtros ágil
+        # 3. Generación del archivo HTML interactivo en disco con panel de filtros ágil y branding Orange
         out_dir = self.cfg["reports"][report_key].get(
             "local_output_dir",
             r"D:\Automaticos\Extraciones Datos Informes\Informes\IR"
@@ -1147,7 +1164,7 @@ class ReportPipeline:
 # ==============================================================================
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Automatización BigQuery -> HTML -> Subida a SharePoint -> Correo MASORANGE"
+        description="Automatización BigQuery -> HTML -> Subida a SharePoint -> Correo Orange"
     )
     parser.add_argument("-c", "--config", default="config.json", help="Ruta al config.json")
     parser.add_argument("-r", "--report", default="ir", choices=["ir"], help="Reporte a procesar")
