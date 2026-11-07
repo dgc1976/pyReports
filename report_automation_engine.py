@@ -61,6 +61,7 @@ class ConfigManager:
         },
         "logging": {
             "level": "INFO",
+            "log_dir": r"D:\Automaticos\Logs\reports",
             "log_file": "report_automation.log"
         }
     }
@@ -92,6 +93,8 @@ class ConfigManager:
             self.config["smtp"]["port"] = args.smtp_port
         if getattr(args, "use_tls", None):
             self.config["smtp"]["use_tls"] = args.use_tls
+        if getattr(args, "log_dir", None):
+            self.config["logging"]["log_dir"] = args.log_dir
 
 
 # ==============================================================================
@@ -773,6 +776,11 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Puerto relay SMTP (sobrescribe config.json)"
     )
+    parser.add_argument(
+        "--log-dir",
+        default=None,
+        help="Directorio donde se guardarán los ficheros de log (sobrescribe config.json)"
+    )
     return parser.parse_args()
 
 
@@ -781,16 +789,26 @@ def main():
     config_mgr = ConfigManager(args.config)
     config_mgr.override_from_args(args)
 
-    # Configuración de Logging
+    # Configuración de Logging y creación automática de directorio
     log_cfg = config_mgr.config.get("logging", {})
+    log_dir = log_cfg.get("log_dir", r"D:\Automaticos\Logs\reports")
+    log_filename = log_cfg.get("log_file", "report_automation.log")
+
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, log_filename)
+    else:
+        log_path = log_filename
+
     logging.basicConfig(
         level=getattr(logging, log_cfg.get("level", "INFO")),
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_cfg.get("log_file", "report_automation.log"), encoding="utf-8")
+            logging.FileHandler(log_path, encoding="utf-8")
         ]
     )
+    logging.info(f"Sistema de logs inicializado en: {log_path}")
 
     # Cálculo de la fecha objetivo
     if args.date:

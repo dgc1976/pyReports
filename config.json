@@ -24,6 +24,7 @@
   },
   "logging": {
     "level": "INFO",
+    "log_dir": "D:\\Automaticos\\Logs\\reports",
     "log_file": "report_automation.log"
   }
 }
