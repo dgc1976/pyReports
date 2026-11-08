@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 Script de Automatización: Cuadro de Mando de Instalaciones (Looker Studio / BigQuery)
-Carga los parámetros desde config.json, consulta en vivo la vista de BigQuery con
-soporte de regiones ('europe-southwest1' y 'EU') y plurales de dataset, genera el
-informe HTML interactivo y lo envía mediante el relay SMTP corporativo.
+Consulta mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE, realiza introspección
+automática de columnas para evitar fallos de nombres de campos, genera el HTML interactivo
+y lo envía mediante el relay SMTP de config.json.
 """
 
 import os
@@ -27,13 +27,12 @@ from google.api_core.exceptions import NotFound, BadRequest
 CONFIG_FILE_PATH = os.getenv("CONFIG_PATH", "config.json")
 
 def load_configuration(path=CONFIG_FILE_PATH):
-    """Carga el fichero de configuración con valores por defecto de respaldo."""
     default_cfg = {
         "bigquery": {
             "project_id": "mo-provision-reporting",
-            "table_name": "mo-provision-reporting.INSTALLATIONS_prod.VW_ENTRADA_CIERRE",
+            "table_name": "mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE",
             "dataset_table_ir": "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod",
-            "location": "europe-southwest1"
+            "location": "EU"
         },
         "smtp": {
             "server": "fsp.si.orange.es",
@@ -70,13 +69,12 @@ def load_configuration(path=CONFIG_FILE_PATH):
         except Exception as e:
             print(f"Aviso: Error al leer {path} ({e}). Usando configuración por defecto.")
     else:
-        print(f"Aviso: {path} no encontrado en el directorio actual. Usando configuración base.")
+        print(f"Aviso: {path} no encontrado. Usando configuración base.")
 
     return default_cfg
 
 CFG = load_configuration()
 
-# Configurar Logging
 log_dir = CFG["logging"].get("log_dir", "./logs")
 log_file = CFG["logging"].get("log_file", "report_automation.log")
 log_level = getattr(logging, CFG["logging"].get("level", "INFO").upper(), logging.INFO)
@@ -99,67 +97,109 @@ logging.basicConfig(
 LOOKER_URL = "https://datastudio.google.com/reporting/cc244b22-6794-4bd5-bf1f-66d2c4a64317/page/baECG"
 
 # ==========================================
-# 2. CONSULTAS A BIGQUERY (ROBUSTAS CON FALLBACK)
+# 2. INTROSPECCIÓN Y EXTRACCIÓN DINÁMICA
 # ==========================================
+def inspect_and_build_query(client, table_fqdn, loc):
+    """
+    Inspecciona las columnas reales de la tabla/vista en INFORMATION_SCHEMA
+    para mapear los nombres exactos de los campos disponibles.
+    """
+    parts = table_fqdn.replace("`", "").split(".")
+    if len(parts) == 3:
+        project, dataset, table_name = parts
+    elif len(parts) == 2:
+        project = client.project
+        dataset, table_name = parts
+    else:
+        raise ValueError(f"Nombre de tabla no válido: {table_fqdn}")
+
+    col_query = f"""
+    SELECT column_name
+    FROM `{project}.{dataset}.INFORMATION_SCHEMA.COLUMNS`
+    WHERE table_name = '{table_name}'
+    """
+    logging.info(f"Inspeccionando esquema en `{project}.{dataset}.{table_name}` ({loc})...")
+    cols_df = client.query(col_query, location=loc).to_dataframe()
+    cols = [c.upper() for c in cols_df['column_name'].tolist()]
+    logging.info(f"Columnas detectadas ({len(cols)}): {cols[:15]}...")
+
+    # Identificar columna de fecha de cierre
+    fecha_cierre_col = None
+    for candidate in ['FECHA_CIERRE', 'DIA_CIERRE', 'F_CIERRE', 'FECHA_FIN', 'DIA', 'FECHA']:
+        if candidate in cols:
+            fecha_cierre_col = candidate
+            break
+
+    if not fecha_cierre_col:
+        date_candidates = [c for c in cols if 'CIERRE' in c or 'FECHA' in c or 'DIA' in c]
+        if date_candidates:
+            fecha_cierre_col = date_candidates[0]
+        else:
+            raise RuntimeError(f"No se detectó ninguna columna de fecha en la vista {table_fqdn}. Columnas: {cols}")
+
+    logging.info(f"-> Columna de fecha seleccionada: `{fecha_cierre_col}`")
+
+    # Mapeo de otras dimensiones con fallbacks
+    def resolve_col(candidates, default_val):
+        for cand in candidates:
+            if cand in cols:
+                return cand
+        return f"'{default_val}'"
+
+    col_grupo = resolve_col(['GRUPO', 'OPERADOR', 'GRUPO_OPERADOR'], 'NO_DEFINIDO')
+    col_segmento = resolve_col(['SEGMENTO', 'SEGMENTO_DESC', 'TIPO_CLIENTE'], 'NO_DEFINIDO')
+    col_servicio = resolve_col(['SERVICIO', 'TIPO_SERVICIO', 'TIPO_OPERACION', 'TIPO_ORDEN'], 'OTROS')
+    col_contrata = resolve_col(['CONTRATA', 'EECC', 'EMPRESA_COLABORADORA'], 'OTRAS')
+    col_marca = resolve_col(['MARCA', 'MARCA_COMERCIAL'], 'OTRAS')
+    col_id = resolve_col(['ID_ORDEN', 'NUM_ORDEN', 'ORDEN_ID', 'ID'], '1')
+
+    query_sql = f"""
+    SELECT
+        DATE({fecha_cierre_col}) AS dia_cierre,
+        FORMAT_DATE('%d %b', DATE({fecha_cierre_col})) AS label_dia,
+        COALESCE(CAST({col_grupo} AS STRING), 'NO_DEFINIDO') AS grupo,
+        COALESCE(CAST({col_segmento} AS STRING), 'NO_DEFINIDO') AS segmento,
+        COALESCE(CAST({col_servicio} AS STRING), 'OTROS') AS servicio,
+        COALESCE(CAST({col_contrata} AS STRING), 'OTRAS') AS contrata,
+        COALESCE(CAST({col_marca} AS STRING), 'OTRAS') AS marca,
+        COUNT(DISTINCT {col_id}) AS ordenes_cerradas
+    FROM `{project}.{dataset}.{table_name}`
+    WHERE DATE({fecha_cierre_col}) BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY) AND CURRENT_DATE()
+    GROUP BY 1, 2, 3, 4, 5, 6, 7
+    ORDER BY dia_cierre ASC;
+    """
+    return query_sql
+
 def fetch_bigquery_data(cfg):
-    """
-    Ejecuta la consulta analítica consolidada.
-    Prueba primero la tabla y ubicación configuradas; si no se encuentra el dataset,
-    prueba las variaciones típicas (INSTALLATIONS_prod vs INSTALLATION_prod, y europe-southwest1 vs EU).
-    """
     bq_cfg = cfg.get("bigquery", {})
     project_id = bq_cfg.get("project_id", "mo-provision-reporting")
-    
-    # Determinar candidatos de tabla/vista
-    configured_table = bq_cfg.get("table_name") or bq_cfg.get("dataset_table_ir", "mo-provision-reporting.INSTALLATIONS_prod.VW_ENTRADA_CIERRE")
-    if "VIS_IR_prod" in configured_table:
-        # Si config apunta al reporte IR, priorizamos la vista de entrada/cierre solicitada
-        configured_table = "mo-provision-reporting.INSTALLATIONS_prod.VW_ENTRADA_CIERRE"
+    configured_table = bq_cfg.get("table_name", "mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE")
 
-    # Lista ordenada de combinaciones (tabla, región) a intentar
     tablas_candidatas = [
         configured_table,
+        "mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE",
         "mo-provision-reporting.INSTALLATIONS_prod.VW_ENTRADA_CIERRE",
-        "mo-provision-reporting.INSTALLATION_prod.VW_ENTRADA_CIERRE",
-        "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod"
+        "mo-provision-reporting.INSTALLATION_prod.VW_ENTRADA_CIERRE"
     ]
-    # Eliminar duplicados preservando orden
     tablas_candidatas = list(dict.fromkeys(tablas_candidatas))
-
-    # Regiones candidatas
-    regiones_candidatas = [bq_cfg.get("location", "europe-southwest1"), "EU", "europe-west1"]
+    regiones_candidatas = [bq_cfg.get("location", "EU"), "europe-southwest1", "europe-west1"]
     regiones_candidatas = list(dict.fromkeys(regiones_candidatas))
 
     ultimo_error = None
 
     for target_table in tablas_candidatas:
         for loc in regiones_candidatas:
-            logging.info(f"Intentando consulta en: `{target_table}` (Región: {loc})...")
+            logging.info(f"Intentando conexión en: `{target_table}` (Región: {loc})...")
             try:
                 client = bigquery.Client(project=project_id, location=loc)
-                query_sql = f"""
-                SELECT
-                    DATE(FECHA_CIERRE) AS dia_cierre,
-                    FORMAT_DATE('%d %b', DATE(FECHA_CIERRE)) AS label_dia,
-                    COALESCE(GRUPO, 'NO_DEFINIDO') AS grupo,
-                    COALESCE(SEGMENTO, 'NO_DEFINIDO') AS segmento,
-                    COALESCE(SERVICIO, 'OTROS') AS servicio,
-                    COALESCE(CONTRATA, 'OTRAS') AS contrata,
-                    COALESCE(MARCA, 'OTRAS') AS marca,
-                    COUNT(DISTINCT ID_ORDEN) AS ordenes_cerradas
-                FROM `{target_table}`
-                WHERE DATE(FECHA_CIERRE) BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY) AND CURRENT_DATE()
-                  AND UPPER(COALESCE(ESTADO, '')) IN ('CERRADA', 'CERRADA_OK', 'FINALIZADA', 'EJECUTADA')
-                GROUP BY 1, 2, 3, 4, 5, 6, 7
-                ORDER BY dia_cierre ASC;
-                """
-                
+                query_sql = inspect_and_build_query(client, target_table, loc)
                 query_job = client.query(query_sql, location=loc)
                 df = query_job.to_dataframe()
-                logging.info(f"¡Éxito! Datos extraídos correctamente desde `{target_table}` en {loc}: {len(df)} filas.")
+                logging.info(f"¡Éxito! Datos extraídos correctamente desde `{target_table}` ({loc}): {len(df)} filas.")
                 return df
             except (NotFound, BadRequest) as ex:
-                logging.warning(f"No disponible en `{target_table}` ({loc}): {ex.message if hasattr(ex, 'message') else ex}")
+                msg = ex.message if hasattr(ex, 'message') else str(ex)
+                logging.warning(f"Fallo en `{target_table}` ({loc}): {msg}")
                 ultimo_error = ex
                 continue
             except Exception as e:
@@ -167,18 +207,16 @@ def fetch_bigquery_data(cfg):
                 ultimo_error = e
                 break
 
-    raise RuntimeError(f"No fue posible consultar ninguna de las variantes de la tabla de BigQuery. Último error: {ultimo_error}")
+    raise RuntimeError(f"No fue posible consultar ninguna de las combinaciones. Último error: {ultimo_error}")
 
 # ==========================================
 # 3. PROCESAMIENTO ANALÍTICO Y GENERACIÓN HTML
 # ==========================================
 def build_html_report(df, template_html_content):
-    """Procesa los datos agregados e inyecta los valores en la plantilla HTML."""
     today = date.today()
     start_date = today - timedelta(days=6)
     rango_txt = f"{start_date.strftime('%d %b')} – {today.strftime('%d %b %Y')}"
 
-    # Eje de fechas (7 días ordenados)
     dias_unicos = sorted(df['dia_cierre'].unique())
     if not dias_unicos:
         dias_unicos = [(today - timedelta(days=i)) for i in range(6, -1, -1)]
@@ -186,7 +224,6 @@ def build_html_report(df, template_html_content):
     else:
         labels_dias = [pd.to_datetime(d).strftime('%d %b') for d in dias_unicos]
 
-    # KPIs Globales
     total_cierres = int(df['ordenes_cerradas'].sum()) if not df.empty else 0
     altas_df = df[df['servicio'].str.upper() == 'ALTA'] if not df.empty else pd.DataFrame()
     traslados_df = df[df['servicio'].str.upper() == 'TRASLADO'] if not df.empty else pd.DataFrame()
@@ -200,7 +237,6 @@ def build_html_report(df, template_html_content):
     pct_traslados = round((traslados_tot / total_cierres * 100), 1) if total_cierres else 0
     pct_migraciones = round((migraciones_tot / total_cierres * 100), 1) if total_cierres else 0
 
-    # Top Contrata
     if not df.empty:
         contratas_grp = df.groupby('contrata')['ordenes_cerradas'].sum().sort_values(ascending=False)
         top_contrata = contratas_grp.index[0] if not contratas_grp.empty else "N/A"
@@ -210,7 +246,6 @@ def build_html_report(df, template_html_content):
         contratas_grp = pd.Series(dtype=int)
         top_contrata, top_contrata_val, top_contrata_pct = "N/A", 0, 0
 
-    # Serie Temporal Global
     piv_grupo = df.pivot_table(index='dia_cierre', columns='grupo', values='ordenes_cerradas', aggfunc='sum', fill_value=0) if not df.empty else pd.DataFrame()
     piv_grupo = piv_grupo.reindex(dias_unicos, fill_value=0)
     global_total = [int(df[df['dia_cierre'] == d]['ordenes_cerradas'].sum()) if not df.empty else 0 for d in dias_unicos]
@@ -218,14 +253,12 @@ def build_html_report(df, template_html_content):
     global_mm = [int(piv_grupo.get('MAS MOVIL', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
     global_krt = [int(piv_grupo.get('KRTV', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
 
-    # Barras por Servicio
     piv_serv = df.pivot_table(index='dia_cierre', columns='servicio', values='ordenes_cerradas', aggfunc='sum', fill_value=0) if not df.empty else pd.DataFrame()
     piv_serv = piv_serv.reindex(dias_unicos, fill_value=0)
     bar_altas = [int(piv_serv.get('ALTA', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
     bar_traslados = [int(piv_serv.get('TRASLADO', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
     bar_migraciones = [int(piv_serv.get('MIGRACION', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
 
-    # Series por Grupo y Servicio
     def get_serv_series_by_group(grp_name):
         if df.empty:
             return ([0]*len(dias_unicos), [0]*len(dias_unicos), [0]*len(dias_unicos))
@@ -242,15 +275,12 @@ def build_html_report(df, template_html_content):
     mm_a, mm_t, mm_m = get_serv_series_by_group('MAS MOVIL')
     krt_a, krt_t, krt_m = get_serv_series_by_group('KRTV')
 
-    # Ranking Contratas (Top 10)
     top10_contratas = contratas_grp.head(10)
     contratas_labels = list(top10_contratas.index)
     contratas_vals = [int(v) for v in top10_contratas.values]
 
-    # Generación de Filas para Tablas Dinámicas
     table_headers_days = "".join([f"<th>{l}</th>" for l in labels_dias])
 
-    # 1. Filas Tabla Contratas
     if not df.empty:
         piv_eecc = df.pivot_table(index='contrata', columns='dia_cierre', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
         piv_eecc['Total'] = piv_eecc.sum(axis=1)
@@ -262,7 +292,6 @@ def build_html_report(df, template_html_content):
     else:
         rows_eecc = "<tr><td colspan='9' style='text-align:center;'>Sin datos registrados</td></tr>"
 
-    # 2. Filas Tabla Marcas
     if not df.empty:
         piv_marca = df.pivot_table(index='marca', columns='dia_cierre', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
         piv_marca['Total'] = piv_marca.sum(axis=1)
@@ -274,7 +303,6 @@ def build_html_report(df, template_html_content):
     else:
         rows_marca = "<tr><td colspan='9' style='text-align:center;'>Sin datos registrados</td></tr>"
 
-    # 3. Filas Tabla Dinámica Grupo / Segmento / Servicio
     if not df.empty:
         piv_det = df.pivot_table(index=['grupo', 'segmento', 'servicio'], columns='dia_cierre', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
         piv_det['Total'] = piv_det.sum(axis=1)
@@ -291,7 +319,6 @@ def build_html_report(df, template_html_content):
     else:
         rows_servicio = "<tr><td colspan='11' style='text-align:center;'>Sin datos registrados</td></tr>"
 
-    # Reemplazo de marcadores en el HTML
     replacements = {
         "{{FECHA_ACTUALIZACION}}": datetime.now().strftime('%d/%m/%Y %H:%M'),
         "{{FECHA_RANGO}}": rango_txt,
@@ -350,7 +377,6 @@ def build_html_report(df, template_html_content):
 # 4. ENVÍO DE CORREO POR SMTP (CONFIG.JSON)
 # ==========================================
 def send_email_with_report(html_content, kpis, cfg):
-    """Envía el correo utilizando la configuración definida en config.json."""
     smtp_cfg = cfg["smtp"]
     report_cfg = cfg.get("reports", {}).get("ir", {})
 
@@ -373,7 +399,6 @@ def send_email_with_report(html_content, kpis, cfg):
     if cc_list:
         msg['Cc'] = ", ".join(cc_list)
 
-    # Cuerpo ejecutivo del correo
     body_html = f"""
     <!DOCTYPE html>
     <html>
@@ -424,7 +449,6 @@ def send_email_with_report(html_content, kpis, cfg):
     """
     msg.attach(MIMEText(body_html, 'html'))
 
-    # Adjuntar archivo HTML interactivo (según configuración)
     send_attachment = report_cfg.get("send_attachment", True)
     if send_attachment:
         filename = f"cdm_evolucion_cierre_{datetime.now().strftime('%Y%m%d')}.html"
@@ -434,7 +458,6 @@ def send_email_with_report(html_content, kpis, cfg):
         attachment.add_header('Content-Disposition', f'attachment; filename="{filename}"')
         msg.attach(attachment)
 
-    # Envío a través del relay SMTP corporativo
     logging.info(f"Conectando a {server_host}:{server_port} (TLS={use_tls})...")
     server = smtplib.SMTP(server_host, server_port)
     if use_tls:
@@ -450,7 +473,6 @@ def send_email_with_report(html_content, kpis, cfg):
 if __name__ == "__main__":
     logging.info("=== Inicio del proceso de generación y envío de CDM ===")
 
-    # Cargar plantilla HTML
     template_path = os.getenv("TEMPLATE_PATH", "plantilla_cdm.html")
     if os.path.exists(template_path):
         with open(template_path, "r", encoding="utf-8") as f:
@@ -459,13 +481,9 @@ if __name__ == "__main__":
         logging.warning(f"No se encontró {template_path}. Asegúrate de exportar el HTML de la Sección 3 como plantilla.")
         sys.exit(1)
 
-    # 1. Extracción de datos desde BigQuery (con fallback de tabla y región)
     df_data = fetch_bigquery_data(CFG)
-
-    # 2. Generación del reporte HTML dinámico
     html_final, kpis = build_html_report(df_data, template_code)
 
-    # 3. Guardado en la ruta local definida en config.json
     local_dir = CFG.get("reports", {}).get("ir", {}).get("local_output_dir", "./output")
     try:
         os.makedirs(local_dir, exist_ok=True)
@@ -478,7 +496,6 @@ if __name__ == "__main__":
         f.write(html_final)
     logging.info(f"Reporte HTML guardado localmente en: {local_output_file}")
 
-    # 4. Envío por SMTP
     try:
         send_email_with_report(html_final, kpis, CFG)
     except Exception as e:
