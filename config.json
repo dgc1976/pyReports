@@ -3,7 +3,7 @@
     "project_id": "mo-provision-reporting",
     "dataset_table_ir": "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod",
     "table_name": "mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE",
-    "location": "southwest1"
+    "location": "EU"
   },
   "sharepoint": {
     "credentials_ini_path": "D:\\Automaticos\\Talend\\Sharepoint\\config.ini",
