@@ -99,10 +99,20 @@ LOOKER_URL = "https://datastudio.google.com/reporting/cc244b22-6794-4bd5-bf1f-66
 # 2. CONSULTAS A BIGQUERY
 # ==========================================
 def fetch_bigquery_data(project_id):
-    """Ejecuta la consulta analítica consolidada sobre la vista de instalaciones."""
-    logging.info(f"Conectando a BigQuery (Proyecto: {project_id})...")
-    client = bigquery.Client(project=project_id)
-
+    # Cargar la configuración para obtener la ubicación y la tabla correctas
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+    
+    bq_config = config.get("bigquery", {})
+    # 1. Obtener la ubicación (por defecto 'europe-southwest1' o 'EU')
+    location = bq_config.get("location", "europe-southwest1")
+    # 2. Obtener la tabla/vista correcta
+    table_name = bq_config.get("dataset_table_ir", "mo-provision-reporting.INSTALLATION_prod.VW_ENTRADA_CIERRE")
+    
+    # Inicializar el cliente con el proyecto y la ubicación de Europa específicos
+    client = bigquery.Client(project=project_id, location=location)
+    
+    # Tu query usando la tabla parametrizada
     query_raw = """
     SELECT
         DATE(FECHA_CIERRE) AS dia_cierre,
@@ -119,10 +129,10 @@ def fetch_bigquery_data(project_id):
     GROUP BY 1, 2, 3, 4, 5, 6, 7
     ORDER BY dia_cierre ASC;
     """
-
-    logging.info("Ejecutando extracción de datos de los últimos 7 días...")
-    df = client.query(query_raw).to_dataframe()
-    logging.info(f"Datos obtenidos: {len(df)} registros agregados.")
+    
+    # Es CRUCIAL pasar también el parámetro 'location' en la llamada .query()
+    query_job = client.query(query_raw, location=location)
+    df = query_job.to_dataframe()
     return df
 
 # ==========================================
