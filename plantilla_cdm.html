@@ -2,79 +2,214 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Instalaciones - Evolución del Cierre (7 Días) | MasOrange</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instalaciones - Evolución del Cierre (7 Días) | CDM MasOrange</title>
     <style>
-        body { margin: 0; padding: 15px; background-color: #f1f5f9; font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #1e293b; }
-        .wrapper { max-width: 960px; margin: 0 auto; background: #ffffff; border-radius: 8px; border: 1px solid #cbd5e1; overflow: hidden; }
-        .header { background-color: #ffffff; border-bottom: 3px solid #ff6600; padding: 20px 24px; }
-        .header h1 { margin: 0; font-size: 20px; color: #0f172a; }
-        .header p { margin: 4px 0 0 0; font-size: 13px; color: #64748b; }
-        .kpi-container { display: flex; flex-wrap: wrap; gap: 12px; padding: 20px 24px; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; }
-        .kpi-box { flex: 1 1 160px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px; text-align: center; }
-        .kpi-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; margin-bottom: 6px; }
-        .kpi-val { font-size: 22px; font-weight: 700; color: #0f172a; }
-        .kpi-sub { font-size: 11px; color: #94a3b8; margin-top: 4px; }
-        .section-block { padding: 20px 24px; border-bottom: 1px solid #e2e8f0; }
-        .section-title { font-size: 15px; font-weight: 700; color: #1e293b; margin: 0 0 12px 0; border-left: 4px solid #ff6600; padding-left: 10px; }
-        table.data-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: right; margin-top: 8px; }
-        table.data-table th, table.data-table td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; }
-        table.data-table th { background-color: #fff7ed; color: #334155; font-weight: 600; white-space: nowrap; }
-        table.data-table th.left, table.data-table td.left { text-align: left; }
-        tr.subtotal { background-color: #fefce8; font-weight: bold; border-top: 1px solid #fef08a; }
-        tr.total-row { background-color: #ffedd5; font-weight: 700; }
-        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; }
-        .b-alta { background: #dbeafe; color: #1e40af; }
-        .b-traslado { background: #fed7aa; color: #9a3412; }
+        body {
+            background-color: #f8fafc;
+            color: #1e293b;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        /* Cabecera idéntica */
+        .dashboard-header {
+            background: #ffffff;
+            padding: 20px 24px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+            border-left: 6px solid #ff6600;
+            margin-bottom: 20px;
+            border: 1px solid #e2e8f0;
+            border-left-width: 6px;
+            border-left-color: #ff6600;
+        }
+        .header-title {
+            font-size: 22px;
+            font-weight: 700;
+            color: #1e293b;
+            margin: 0 0 6px 0;
+        }
+        .header-sub {
+            font-size: 13px;
+            color: #64748b;
+            margin: 0;
+        }
+        .header-badge {
+            display: inline-block;
+            background: #fff5ee;
+            color: #e05500;
+            border: 1px solid #ffd4be;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+        /* KPIs con el diseño de cdm_provision.html */
+        .kpi-row {
+            display: table;
+            width: 100%;
+            margin-bottom: 20px;
+            border-spacing: 12px 0;
+        }
+        .kpi-card {
+            display: table-cell;
+            width: 20%;
+            background: #ffffff;
+            padding: 16px 18px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+            border: 1px solid #e2e8f0;
+            vertical-align: top;
+        }
+        .kpi-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: #64748b;
+            letter-spacing: 0.5px;
+        }
+        .kpi-num {
+            font-size: 26px;
+            font-weight: 800;
+            color: #1e293b;
+            margin: 6px 0;
+        }
+        .kpi-sub {
+            font-size: 11px;
+            color: #64748b;
+        }
+        /* Tablas Dinámicas idénticas */
+        .table-card {
+            background: #ffffff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+            border: 1px solid #e2e8f0;
+            margin-bottom: 24px;
+        }
+        .table-card h3 {
+            font-size: 16px;
+            font-weight: 700;
+            margin: 0 0 16px 0;
+            color: #1e293b;
+            border-left: 4px solid #ff6600;
+            padding-left: 10px;
+        }
+        table.pivot-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            text-align: right;
+        }
+        table.pivot-table th, table.pivot-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        table.pivot-table th {
+            background-color: #fff8ee;
+            color: #334155;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        table.pivot-table th.col-left, table.pivot-table td.col-left {
+            text-align: left;
+        }
+        tr.row-subtotal {
+            background-color: #fffdf5;
+            font-weight: 700;
+            border-top: 1px solid #fed7aa;
+            border-bottom: 1px solid #fed7aa;
+        }
+        tr.row-total-group {
+            background-color: #fed7aa33;
+            font-weight: 800;
+            border-top: 1px solid #fed7aa;
+            border-bottom: 2px solid #fdba74;
+        }
+        .badge-serv {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        .b-alta { background: #e0e7ff; color: #3730a3; }
+        .b-traslado { background: #ffedd5; color: #9a3412; }
         .b-migracion { background: #fee2e2; color: #991b1b; }
-        .footer { padding: 18px 24px; text-align: center; font-size: 12px; color: #64748b; background-color: #f8fafc; }
-        .btn { display: inline-block; background-color: #ff6600; color: #ffffff !important; padding: 8px 16px; border-radius: 4px; text-decoration: none; font-weight: 600; font-size: 12px; margin-top: 8px; }
+        .footer-action {
+            text-align: center;
+            padding: 20px;
+            background: #ffffff;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+            margin-top: 20px;
+        }
+        .btn-looker {
+            display: inline-block;
+            background: #ff6600;
+            color: #ffffff !important;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 700;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
-    <div class="wrapper">
-        <div class="header">
-            <h1>Instalaciones: Evolución del Cierre (7 Días)</h1>
-            <p>Reporte Oficial | MasOrange Provisión | Período: <strong>{{FECHA_RANGO}}</strong></p>
+    <div class="container">
+        <!-- Cabecera -->
+        <div class="dashboard-header">
+            <h1 class="header-title">Instalaciones: Evolución del Cierre (7 Días)</h1>
+            <p class="header-sub">Origen BigQuery: <code>mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE</code> | Período: <strong>{{FECHA_RANGO}}</strong></p>
+            <div class="header-badge">Vista Oficial Looker Studio - MasOrange</div>
         </div>
 
-        <div class="kpi-container">
-            <div class="kpi-box">
-                <div class="kpi-title">Total Cierres</div>
-                <div class="kpi-val">{{TOTAL_CIERRES}}</div>
-                <div class="kpi-sub">Últimos 7 días</div>
+        <!-- Fila de KPIs -->
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-title">Total Órdenes Cerradas</div>
+                <div class="kpi-num">{{TOTAL_CIERRES}}</div>
+                <div class="kpi-sub">Periodo: {{FECHA_RANGO}}</div>
             </div>
-            <div class="kpi-box">
-                <div class="kpi-title">Altas</div>
-                <div class="kpi-val">{{ALTAS_TOTAL}}</div>
-                <div class="kpi-sub">{{PCT_ALTAS}}% del total</div>
+            <div class="kpi-card">
+                <div class="kpi-title">Altas Cerradas</div>
+                <div class="kpi-num">{{ALTAS_TOTAL}}</div>
+                <div class="kpi-sub">{{PCT_ALTAS}}% del total de cierres</div>
             </div>
-            <div class="kpi-box">
-                <div class="kpi-title">Traslados</div>
-                <div class="kpi-val">{{TRASLADOS_TOTAL}}</div>
-                <div class="kpi-sub">{{PCT_TRASLADOS}}% del total</div>
+            <div class="kpi-card">
+                <div class="kpi-title">Traslados Cerrados</div>
+                <div class="kpi-num">{{TRASLADOS_TOTAL}}</div>
+                <div class="kpi-sub">{{PCT_TRASLADOS}}% del volumen</div>
             </div>
-            <div class="kpi-box">
-                <div class="kpi-title">Migraciones</div>
-                <div class="kpi-val">{{MIGRACIONES_TOTAL}}</div>
-                <div class="kpi-sub">{{PCT_MIGRACIONES}}% del total</div>
+            <div class="kpi-card">
+                <div class="kpi-title">Migraciones Cerradas</div>
+                <div class="kpi-num">{{MIGRACIONES_TOTAL}}</div>
+                <div class="kpi-sub">{{PCT_MIGRACIONES}}% del volumen</div>
             </div>
-            <div class="kpi-box">
-                <div class="kpi-title">Top Contrata</div>
-                <div class="kpi-val" style="font-size:16px;">{{TOP_CONTRATA_NOMBRE}}</div>
-                <div class="kpi-sub">{{TOP_CONTRATA_VALOR}} ({{TOP_CONTRATA_PCT}}%)</div>
+            <div class="kpi-card">
+                <div class="kpi-title">Top Contrata (Cierres)</div>
+                <div class="kpi-num" style="font-size: 20px;">{{TOP_CONTRATA_NOMBRE}}</div>
+                <div class="kpi-sub">{{TOP_CONTRATA_VALOR}} instalaciones ({{TOP_CONTRATA_PCT}}%)</div>
             </div>
         </div>
 
-        <!-- TABLA 1: SERVICIO Y SEGMENTO -->
-        <div class="section-block">
-            <div class="section-title">Evolución de Cierres por Grupo, Segmento y Servicio</div>
+        <!-- TABLA DINÁMICA 1: SERVICIO Y SEGMENTO -->
+        <div class="table-card">
+            <h3>Evolución del Cierre (7 Días) por Grupo, Segmento y Servicio</h3>
             <div style="overflow-x:auto;">
-                <table class="data-table">
+                <table class="pivot-table">
                     <thead>
                         <tr>
-                            <th class="left">Grupo</th>
-                            <th class="left">Segmento</th>
-                            <th class="left">Servicio</th>
+                            <th class="col-left">Grupo</th>
+                            <th class="col-left">Segmento</th>
+                            <th class="col-left">Servicio</th>
                             {{TABLE_HEADER_DAYS}}
                             <th>Total</th>
                         </tr>
@@ -86,14 +221,14 @@
             </div>
         </div>
 
-        <!-- TABLA 2: CONTRATAS (EECC) -->
-        <div class="section-block">
-            <div class="section-title">Evolución de Cierres por Contrata (EECC)</div>
+        <!-- TABLA DINÁMICA 2: CONTRATAS (EECC) -->
+        <div class="table-card">
+            <h3>Evolución de Cierres por Contrata (EECC)</h3>
             <div style="overflow-x:auto;">
-                <table class="data-table">
+                <table class="pivot-table">
                     <thead>
                         <tr>
-                            <th class="left">Contrata</th>
+                            <th class="col-left">Contrata</th>
                             {{TABLE_HEADER_DAYS}}
                             <th>Total Periodo</th>
                         </tr>
@@ -105,14 +240,14 @@
             </div>
         </div>
 
-        <!-- TABLA 3: MARCAS COMERCIALES -->
-        <div class="section-block">
-            <div class="section-title">Evolución de Cierres por Marca Comercial</div>
+        <!-- TABLA DINÁMICA 3: MARCAS -->
+        <div class="table-card">
+            <h3>Evolución de Cierres por Marca Comercial</h3>
             <div style="overflow-x:auto;">
-                <table class="data-table">
+                <table class="pivot-table">
                     <thead>
                         <tr>
-                            <th class="left">Marca Comercial</th>
+                            <th class="col-left">Marca</th>
                             {{TABLE_HEADER_DAYS}}
                             <th>Total Periodo</th>
                         </tr>
@@ -124,9 +259,12 @@
             </div>
         </div>
 
-        <div class="footer">
-            <p>Generado automáticamente a partir de <code>mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE</code> (BigQuery EU).</p>
-            <a href="https://datastudio.google.com/reporting/cc244b22-6794-4bd5-bf1f-66d2c4a64317/page/baECG" class="btn" target="_blank">Abrir Reporte en Looker Studio</a>
+        <!-- Enlace a Looker Studio -->
+        <div class="footer-action">
+            <p style="margin: 0 0 12px 0; font-size: 13px; color: #64748b;">
+                Puedes consultar el informe interactivo con gráficos en línea y filtros directos en Looker Studio:
+            </p>
+            <a href="https://datastudio.google.com/reporting/cc244b22-6794-4bd5-bf1f-66d2c4a64317/page/baECG" class="btn-looker" target="_blank">Abrir Reporte en Looker Studio</a>
         </div>
     </div>
 </body>

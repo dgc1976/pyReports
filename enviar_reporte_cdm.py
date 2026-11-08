@@ -3,7 +3,7 @@
 """
 Script de Automatización: Cuadro de Mando de Instalaciones (Looker Studio / BigQuery)
 Consulta mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE en la región EU,
-genera el informe completo en HTML embebido en el cuerpo del correo y lo envía por SMTP.
+genera el cuerpo de correo idéntico a cdm_provision.html y lo envía por SMTP.
 """
 
 import os
@@ -174,7 +174,7 @@ def build_html_report(df, template_html_content):
         rows_eecc = ""
         for contrata_name, row in piv_eecc.iterrows():
             cols_html = "".join([f"<td>{int(row.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
-            rows_eecc += f"<tr><td class='left'><strong>{contrata_name}</strong></td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
+            rows_eecc += f"<tr><td class='col-left'><strong>{contrata_name}</strong></td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
     else:
         rows_eecc = "<tr><td colspan='9' style='text-align:center;'>Sin datos registrados</td></tr>"
 
@@ -186,29 +186,50 @@ def build_html_report(df, template_html_content):
         rows_marca = ""
         for marca_name, row in piv_marca.iterrows():
             cols_html = "".join([f"<td>{int(row.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
-            rows_marca += f"<tr><td class='left'><strong>{marca_name}</strong></td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
+            rows_marca += f"<tr><td class='col-left'><strong>{marca_name}</strong></td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
     else:
         rows_marca = "<tr><td colspan='9' style='text-align:center;'>Sin datos registrados</td></tr>"
 
-    # Tabla dinámica: Detalle Servicio y Segmento
+    # Tabla dinámica: Servicio & Segmento (con subtotales idénticos a cdm_provision.html)
+    rows_servicio = ""
     if not df.empty:
-        piv_det = df.pivot_table(index=['grupo', 'segmento', 'servicio'], columns='dia_cierre', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
-        piv_det['Total'] = piv_det.sum(axis=1)
+        grupos_orden = ['ORANGE', 'MAS MOVIL', 'KRTV'] + [g for g in df['grupo'].unique() if g not in ['ORANGE', 'MAS MOVIL', 'KRTV']]
         badge_map = {
-            'ALTA': '<span class="badge b-alta">ALTA</span>',
-            'TRASLADO': '<span class="badge b-traslado">TRASLADO</span>',
-            'MIGRACION': '<span class="badge b-migracion">MIGRACION</span>'
+            'ALTA': '<span class="badge-serv b-alta">ALTA</span>',
+            'TRASLADO': '<span class="badge-serv b-traslado">TRASLADO</span>',
+            'MIGRACION': '<span class="badge-serv b-migracion">MIGRACION</span>'
         }
-        rows_servicio = ""
-        for (g, s, serv), row in piv_det.iterrows():
-            cols_html = "".join([f"<td>{int(row.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
-            serv_badge = badge_map.get(serv.upper(), serv)
-            rows_servicio += f"<tr><td class='left'>{g}</td><td class='left'>{s}</td><td class='left'>{serv_badge}</td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
+        for grp in grupos_orden:
+            df_g = df[df['grupo'] == grp]
+            if df_g.empty:
+                continue
+            segmentos = df_g['segmento'].unique()
+            for seg in segmentos:
+                df_gs = df_g[df_g['segmento'] == seg]
+                servicios = ['ALTA', 'TRASLADO', 'MIGRACION'] + [s for s in df_gs['servicio'].unique() if s.upper() not in ['ALTA', 'TRASLADO', 'MIGRACION']]
+                for srv in servicios:
+                    df_gss = df_gs[df_gs['servicio'].str.upper() == srv.upper()]
+                    if df_gss.empty:
+                        continue
+                    piv_s = df_gss.groupby('dia_cierre')['ordenes_cerradas'].sum()
+                    cols_html = "".join([f"<td>{int(piv_s.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
+                    tot_srv = int(piv_s.sum())
+                    badge = badge_map.get(srv.upper(), f'<span class="badge-serv">{srv}</span>')
+                    rows_servicio += f"<tr><td class='col-left'><strong>{grp}</strong></td><td class='col-left'>{seg}</td><td class='col-left'>{badge}</td>{cols_html}<td>{tot_srv:,}</td></tr>\n".replace(",", ".")
+                
+                # Subtotal Segmento
+                piv_seg = df_gs.groupby('dia_cierre')['ordenes_cerradas'].sum()
+                cols_sub = "".join([f"<td>{int(piv_seg.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
+                rows_servicio += f"<tr class='row-subtotal'><td class='col-left' colspan='3'>Subtotal {seg}</td>{cols_sub}<td>{int(piv_seg.sum()):,}</td></tr>\n".replace(",", ".")
+            
+            # Subtotal Grupo
+            piv_grp = df_g.groupby('dia_cierre')['ordenes_cerradas'].sum()
+            cols_grp = "".join([f"<td>{int(piv_grp.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
+            rows_servicio += f"<tr class='row-total-group'><td class='col-left' colspan='3'>Total {grp}</td>{cols_grp}<td><strong>{int(piv_grp.sum()):,}</strong></td></tr>\n".replace(",", ".")
     else:
         rows_servicio = "<tr><td colspan='11' style='text-align:center;'>Sin datos registrados</td></tr>"
 
     replacements = {
-        "{{FECHA_ACTUALIZACION}}": datetime.now().strftime('%d/%m/%Y %H:%M'),
         "{{FECHA_RANGO}}": rango_txt,
         "{{TOTAL_CIERRES}}": f"{total_cierres:,}".replace(",", "."),
         "{{ALTAS_TOTAL}}": f"{altas_tot:,}".replace(",", "."),
@@ -232,12 +253,7 @@ def build_html_report(df, template_html_content):
 
     kpis_dict = {
         "rango": rango_txt,
-        "total": f"{total_cierres:,}".replace(",", "."),
-        "altas": f"{altas_tot:,}".replace(",", "."),
-        "traslados": f"{traslados_tot:,}".replace(",", "."),
-        "migraciones": f"{migraciones_tot:,}".replace(",", "."),
-        "top_contrata": top_contrata,
-        "top_contrata_val": f"{top_contrata_val:,}".replace(",", ".")
+        "total": f"{total_cierres:,}".replace(",", ".")
     }
 
     return html_final, kpis_dict
@@ -268,10 +284,10 @@ def send_email_with_report(html_content, kpis, cfg):
     if cc_list:
         msg['Cc'] = ", ".join(cc_list)
 
-    # Inyección del informe completo como cuerpo principal del mensaje
+    # El cuerpo del correo es exactamente el HTML del dashboard
     msg.attach(MIMEText(html_content, 'html', 'utf-8'))
 
-    # Adjunto opcional en formato .html
+    # Adjuntar también el archivo .html para visualización local
     send_attachment = report_cfg.get("send_attachment", True)
     if send_attachment:
         filename = f"cdm_evolucion_cierre_{datetime.now().strftime('%Y%m%d')}.html"
