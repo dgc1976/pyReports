@@ -2,7 +2,6 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Instalaciones - Evolución del Cierre (7 Días) | CDM MasOrange</title>
     <style>
         body {
@@ -13,20 +12,20 @@
             padding: 20px;
         }
         .container {
-            max-width: 1000px;
+            max-width: 980px;
             margin: 0 auto;
+            background: #f8fafc;
         }
-        /* Cabecera idéntica */
+        /* Cabecera idéntica a cdm_provision.html */
         .dashboard-header {
             background: #ffffff;
             padding: 20px 24px;
             border-radius: 10px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
             border-left: 6px solid #ff6600;
+            border-top: 1px solid #e2e8f0;
+            border-right: 1px solid #e2e8f0;
+            border-bottom: 1px solid #e2e8f0;
             margin-bottom: 20px;
-            border: 1px solid #e2e8f0;
-            border-left-width: 6px;
-            border-left-color: #ff6600;
         }
         .header-title {
             font-size: 22px;
@@ -50,65 +49,91 @@
             font-weight: 600;
             margin-top: 10px;
         }
-        /* KPIs con el diseño de cdm_provision.html */
-        .kpi-row {
-            display: table;
+        /* KPIs tabulares compatibles con clientes de correo */
+        .kpi-table-wrap {
             width: 100%;
+            border-collapse: separate;
+            border-spacing: 10px 0;
             margin-bottom: 20px;
-            border-spacing: 12px 0;
         }
-        .kpi-card {
-            display: table-cell;
-            width: 20%;
+        .kpi-cell {
             background: #ffffff;
-            padding: 16px 18px;
+            padding: 16px;
             border-radius: 10px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
             border: 1px solid #e2e8f0;
             vertical-align: top;
+            width: 20%;
         }
         .kpi-title {
             font-size: 11px;
             text-transform: uppercase;
             font-weight: 700;
             color: #64748b;
-            letter-spacing: 0.5px;
+            margin-bottom: 4px;
         }
         .kpi-num {
             font-size: 26px;
             font-weight: 800;
             color: #1e293b;
-            margin: 6px 0;
+            margin: 4px 0;
         }
         .kpi-sub {
             font-size: 11px;
             color: #64748b;
         }
-        /* Tablas Dinámicas idénticas */
-        .table-card {
+        /* Sección Gráficos Embebidos */
+        .card-box {
             background: #ffffff;
             padding: 20px;
             border-radius: 10px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
             border: 1px solid #e2e8f0;
-            margin-bottom: 24px;
+            margin-bottom: 20px;
         }
-        .table-card h3 {
-            font-size: 16px;
+        .card-box h3 {
+            font-size: 15px;
             font-weight: 700;
-            margin: 0 0 16px 0;
+            margin: 0 0 14px 0;
             color: #1e293b;
             border-left: 4px solid #ff6600;
             padding-left: 10px;
         }
+        .charts-row {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 12px 0;
+            margin-bottom: 12px;
+        }
+        .chart-cell {
+            width: 50%;
+            vertical-align: top;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 14px;
+        }
+        .chart-cell-3 {
+            width: 33.33%;
+            vertical-align: top;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .chart-img {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 4px;
+        }
+        /* Tablas Dinámicas */
         table.pivot-table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 13px;
+            font-size: 12.5px;
             text-align: right;
         }
         table.pivot-table th, table.pivot-table td {
-            padding: 10px 12px;
+            padding: 9px 11px;
             border-bottom: 1px solid #f1f5f9;
         }
         table.pivot-table th {
@@ -134,7 +159,7 @@
         }
         .badge-serv {
             display: inline-block;
-            padding: 3px 8px;
+            padding: 2px 7px;
             border-radius: 4px;
             font-size: 11px;
             font-weight: 700;
@@ -142,9 +167,9 @@
         .b-alta { background: #e0e7ff; color: #3730a3; }
         .b-traslado { background: #ffedd5; color: #9a3412; }
         .b-migracion { background: #fee2e2; color: #991b1b; }
-        .footer-action {
+        .footer-box {
             text-align: center;
-            padding: 20px;
+            padding: 18px;
             background: #ffffff;
             border-radius: 10px;
             border: 1px solid #e2e8f0;
@@ -154,11 +179,11 @@
             display: inline-block;
             background: #ff6600;
             color: #ffffff !important;
-            padding: 12px 24px;
+            padding: 11px 22px;
             text-decoration: none;
             border-radius: 6px;
             font-weight: 700;
-            font-size: 14px;
+            font-size: 13px;
         }
     </style>
 </head>
@@ -172,97 +197,148 @@
         </div>
 
         <!-- Fila de KPIs -->
-        <div class="kpi-row">
-            <div class="kpi-card">
-                <div class="kpi-title">Total Órdenes Cerradas</div>
-                <div class="kpi-num">{{TOTAL_CIERRES}}</div>
-                <div class="kpi-sub">Periodo: {{FECHA_RANGO}}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Altas Cerradas</div>
-                <div class="kpi-num">{{ALTAS_TOTAL}}</div>
-                <div class="kpi-sub">{{PCT_ALTAS}}% del total de cierres</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Traslados Cerrados</div>
-                <div class="kpi-num">{{TRASLADOS_TOTAL}}</div>
-                <div class="kpi-sub">{{PCT_TRASLADOS}}% del volumen</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Migraciones Cerradas</div>
-                <div class="kpi-num">{{MIGRACIONES_TOTAL}}</div>
-                <div class="kpi-sub">{{PCT_MIGRACIONES}}% del volumen</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">Top Contrata (Cierres)</div>
-                <div class="kpi-num" style="font-size: 20px;">{{TOP_CONTRATA_NOMBRE}}</div>
-                <div class="kpi-sub">{{TOP_CONTRATA_VALOR}} instalaciones ({{TOP_CONTRATA_PCT}}%)</div>
-            </div>
+        <table class="kpi-table-wrap">
+            <tr>
+                <td class="kpi-cell">
+                    <div class="kpi-title">Total Órdenes Cerradas</div>
+                    <div class="kpi-num">{{TOTAL_CIERRES}}</div>
+                    <div class="kpi-sub">Periodo: {{FECHA_RANGO}}</div>
+                </td>
+                <td class="kpi-cell">
+                    <div class="kpi-title">Altas Cerradas</div>
+                    <div class="kpi-num">{{ALTAS_TOTAL}}</div>
+                    <div class="kpi-sub">{{PCT_ALTAS}}% del total de cierres</div>
+                </td>
+                <td class="kpi-cell">
+                    <div class="kpi-title">Traslados Cerrados</div>
+                    <div class="kpi-num">{{TRASLADOS_TOTAL}}</div>
+                    <div class="kpi-sub">{{PCT_TRASLADOS}}% del volumen</div>
+                </td>
+                <td class="kpi-cell">
+                    <div class="kpi-title">Migraciones Cerradas</div>
+                    <div class="kpi-num">{{MIGRACIONES_TOTAL}}</div>
+                    <div class="kpi-sub">{{PCT_MIGRACIONES}}% del volumen</div>
+                </td>
+                <td class="kpi-cell">
+                    <div class="kpi-title">Top Contrata</div>
+                    <div class="kpi-num" style="font-size: 20px;">{{TOP_CONTRATA_NOMBRE}}</div>
+                    <div class="kpi-sub">{{TOP_CONTRATA_VALOR}} inst. ({{TOP_CONTRATA_PCT}}%)</div>
+                </td>
+            </tr>
+        </table>
+
+        <!-- GRÁFICOS PRINCIPALES (EMBEDDED IMAGES) -->
+        <div class="card-box">
+            <h3>Gráficos y Tendencias del Cierre</h3>
+            <table class="charts-row">
+                <tr>
+                    <td class="chart-cell">
+                        <strong style="font-size: 13px; color: #334155;">Serie Temporal: Órdenes por Grupo</strong>
+                        <div style="margin-top: 8px;">
+                            <img src="cid:chart_timeseries" class="chart-img" alt="Serie Temporal Global" />
+                        </div>
+                    </td>
+                    <td class="chart-cell">
+                        <strong style="font-size: 13px; color: #334155;">Evolución Diaria por Servicio</strong>
+                        <div style="margin-top: 8px;">
+                            <img src="cid:chart_service_bar" class="chart-img" alt="Barras Servicio" />
+                        </div>
+                    </td>
+                </tr>
+            </table>
+
+            <table class="charts-row" style="margin-top: 14px;">
+                <tr>
+                    <td class="chart-cell">
+                        <strong style="font-size: 13px; color: #334155;">Ranking Cierres por Contrata (EECC)</strong>
+                        <div style="margin-top: 8px;">
+                            <img src="cid:chart_contratas" class="chart-img" alt="Ranking Contratas" />
+                        </div>
+                    </td>
+                    <td class="chart-cell">
+                        <strong style="font-size: 13px; color: #334155;">Grupo ORANGE por Servicio</strong>
+                        <div style="margin-top: 8px;">
+                            <img src="cid:chart_orange" class="chart-img" alt="Orange por Servicio" />
+                        </div>
+                    </td>
+                </tr>
+            </table>
+
+            <table class="charts-row" style="margin-top: 14px;">
+                <tr>
+                    <td class="chart-cell">
+                        <strong style="font-size: 13px; color: #334155;">Grupo MAS MOVIL por Servicio</strong>
+                        <div style="margin-top: 8px;">
+                            <img src="cid:chart_masmovil" class="chart-img" alt="MasMovil por Servicio" />
+                        </div>
+                    </td>
+                    <td class="chart-cell">
+                        <strong style="font-size: 13px; color: #334155;">Grupo KRTV por Servicio</strong>
+                        <div style="margin-top: 8px;">
+                            <img src="cid:chart_krtv" class="chart-img" alt="KRTV por Servicio" />
+                        </div>
+                    </td>
+                </tr>
+            </table>
         </div>
 
-        <!-- TABLA DINÁMICA 1: SERVICIO Y SEGMENTO -->
-        <div class="table-card">
+        <!-- TABLA DINÁMICA 1: SERVICIO & SEGMENTO -->
+        <div class="card-box">
             <h3>Evolución del Cierre (7 Días) por Grupo, Segmento y Servicio</h3>
-            <div style="overflow-x:auto;">
-                <table class="pivot-table">
-                    <thead>
-                        <tr>
-                            <th class="col-left">Grupo</th>
-                            <th class="col-left">Segmento</th>
-                            <th class="col-left">Servicio</th>
-                            {{TABLE_HEADER_DAYS}}
-                            <th>Total</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{PIVOT_SERVICIO_ROWS}}
-                    </tbody>
-                </table>
-            </div>
+            <table class="pivot-table">
+                <thead>
+                    <tr>
+                        <th class="col-left">Grupo</th>
+                        <th class="col-left">Segmento</th>
+                        <th class="col-left">Servicio</th>
+                        {{TABLE_HEADER_DAYS}}
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{PIVOT_SERVICIO_ROWS}}
+                </tbody>
+            </table>
         </div>
 
-        <!-- TABLA DINÁMICA 2: CONTRATAS (EECC) -->
-        <div class="table-card">
+        <!-- TABLA DINÁMICA 2: CONTRATAS -->
+        <div class="card-box">
             <h3>Evolución de Cierres por Contrata (EECC)</h3>
-            <div style="overflow-x:auto;">
-                <table class="pivot-table">
-                    <thead>
-                        <tr>
-                            <th class="col-left">Contrata</th>
-                            {{TABLE_HEADER_DAYS}}
-                            <th>Total Periodo</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{PIVOT_CONTRATAS_ROWS}}
-                    </tbody>
-                </table>
-            </div>
+            <table class="pivot-table">
+                <thead>
+                    <tr>
+                        <th class="col-left">Contrata</th>
+                        {{TABLE_HEADER_DAYS}}
+                        <th>Total Periodo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{PIVOT_CONTRATAS_ROWS}}
+                </tbody>
+            </table>
         </div>
 
         <!-- TABLA DINÁMICA 3: MARCAS -->
-        <div class="table-card">
+        <div class="card-box">
             <h3>Evolución de Cierres por Marca Comercial</h3>
-            <div style="overflow-x:auto;">
-                <table class="pivot-table">
-                    <thead>
-                        <tr>
-                            <th class="col-left">Marca</th>
-                            {{TABLE_HEADER_DAYS}}
-                            <th>Total Periodo</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{PIVOT_MARCAS_ROWS}}
-                    </tbody>
-                </table>
-            </div>
+            <table class="pivot-table">
+                <thead>
+                    <tr>
+                        <th class="col-left">Marca</th>
+                        {{TABLE_HEADER_DAYS}}
+                        <th>Total Periodo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{PIVOT_MARCAS_ROWS}}
+                </tbody>
+            </table>
         </div>
 
-        <!-- Enlace a Looker Studio -->
-        <div class="footer-action">
-            <p style="margin: 0 0 12px 0; font-size: 13px; color: #64748b;">
-                Puedes consultar el informe interactivo con gráficos en línea y filtros directos en Looker Studio:
+        <!-- Enlace a Looker -->
+        <div class="footer-box">
+            <p style="margin: 0 0 10px 0; font-size: 13px; color: #64748b;">
+                Reporte completo con interactividad dinámica disponible en Looker Studio:
             </p>
             <a href="https://datastudio.google.com/reporting/cc244b22-6794-4bd5-bf1f-66d2c4a64317/page/baECG" class="btn-looker" target="_blank">Abrir Reporte en Looker Studio</a>
         </div>
