@@ -3,7 +3,7 @@
 """
 Script de Automatización: Cuadro de Mando de Instalaciones (Looker Studio / BigQuery)
 Consulta mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE en la región EU,
-genera el HTML interactivo y lo envía mediante el relay SMTP configurado en config.json.
+genera el informe completo en HTML embebido en el cuerpo del correo y lo envía por SMTP.
 """
 
 import os
@@ -105,7 +105,6 @@ def fetch_bigquery_data(cfg):
     logging.info(f"Conectando a BigQuery: `{target_table}` (Región: {loc})...")
     client = bigquery.Client(project=project_id, location=loc)
 
-    # Consulta directa utilizando los campos confirmados de la tabla
     query_sql = f"""
     SELECT
         DATE(report_date) AS dia_cierre,
@@ -165,41 +164,9 @@ def build_html_report(df, template_html_content):
         contratas_grp = pd.Series(dtype=int)
         top_contrata, top_contrata_val, top_contrata_pct = "N/A", 0, 0
 
-    piv_grupo = df.pivot_table(index='dia_cierre', columns='grupo', values='ordenes_cerradas', aggfunc='sum', fill_value=0) if not df.empty else pd.DataFrame()
-    piv_grupo = piv_grupo.reindex(dias_unicos, fill_value=0)
-    global_total = [int(df[df['dia_cierre'] == d]['ordenes_cerradas'].sum()) if not df.empty else 0 for d in dias_unicos]
-    global_osp = [int(piv_grupo.get('ORANGE', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
-    global_mm = [int(piv_grupo.get('MAS MOVIL', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
-    global_krt = [int(piv_grupo.get('KRTV', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
-
-    piv_serv = df.pivot_table(index='dia_cierre', columns='servicio', values='ordenes_cerradas', aggfunc='sum', fill_value=0) if not df.empty else pd.DataFrame()
-    piv_serv = piv_serv.reindex(dias_unicos, fill_value=0)
-    bar_altas = [int(piv_serv.get('ALTA', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
-    bar_traslados = [int(piv_serv.get('TRASLADO', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
-    bar_migraciones = [int(piv_serv.get('MIGRACION', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
-
-    def get_serv_series_by_group(grp_name):
-        if df.empty:
-            return ([0]*len(dias_unicos), [0]*len(dias_unicos), [0]*len(dias_unicos))
-        sub_df = df[df['grupo'] == grp_name]
-        p = sub_df.pivot_table(index='dia_cierre', columns='servicio', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
-        p = p.reindex(dias_unicos, fill_value=0)
-        return (
-            [int(p.get('ALTA', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos],
-            [int(p.get('TRASLADO', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos],
-            [int(p.get('MIGRACION', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
-        )
-
-    orange_a, orange_t, orange_m = get_serv_series_by_group('ORANGE')
-    mm_a, mm_t, mm_m = get_serv_series_by_group('MAS MOVIL')
-    krt_a, krt_t, krt_m = get_serv_series_by_group('KRTV')
-
-    top10_contratas = contratas_grp.head(10)
-    contratas_labels = list(top10_contratas.index)
-    contratas_vals = [int(v) for v in top10_contratas.values]
-
     table_headers_days = "".join([f"<th>{l}</th>" for l in labels_dias])
 
+    # Tabla dinámica: Contratas
     if not df.empty:
         piv_eecc = df.pivot_table(index='contrata', columns='dia_cierre', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
         piv_eecc['Total'] = piv_eecc.sum(axis=1)
@@ -207,10 +174,11 @@ def build_html_report(df, template_html_content):
         rows_eecc = ""
         for contrata_name, row in piv_eecc.iterrows():
             cols_html = "".join([f"<td>{int(row.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
-            rows_eecc += f"<tr><td class='col-left'><strong>{contrata_name}</strong></td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
+            rows_eecc += f"<tr><td class='left'><strong>{contrata_name}</strong></td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
     else:
         rows_eecc = "<tr><td colspan='9' style='text-align:center;'>Sin datos registrados</td></tr>"
 
+    # Tabla dinámica: Marcas
     if not df.empty:
         piv_marca = df.pivot_table(index='marca', columns='dia_cierre', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
         piv_marca['Total'] = piv_marca.sum(axis=1)
@@ -218,23 +186,24 @@ def build_html_report(df, template_html_content):
         rows_marca = ""
         for marca_name, row in piv_marca.iterrows():
             cols_html = "".join([f"<td>{int(row.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
-            rows_marca += f"<tr><td class='col-left'><strong>{marca_name}</strong></td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
+            rows_marca += f"<tr><td class='left'><strong>{marca_name}</strong></td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
     else:
         rows_marca = "<tr><td colspan='9' style='text-align:center;'>Sin datos registrados</td></tr>"
 
+    # Tabla dinámica: Detalle Servicio y Segmento
     if not df.empty:
         piv_det = df.pivot_table(index=['grupo', 'segmento', 'servicio'], columns='dia_cierre', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
         piv_det['Total'] = piv_det.sum(axis=1)
         badge_map = {
-            'ALTA': '<span class="badge-serv b-alta">ALTA</span>',
-            'TRASLADO': '<span class="badge-serv b-traslado">TRASLADO</span>',
-            'MIGRACION': '<span class="badge-serv b-migracion">MIGRACION</span>'
+            'ALTA': '<span class="badge b-alta">ALTA</span>',
+            'TRASLADO': '<span class="badge b-traslado">TRASLADO</span>',
+            'MIGRACION': '<span class="badge b-migracion">MIGRACION</span>'
         }
         rows_servicio = ""
         for (g, s, serv), row in piv_det.iterrows():
             cols_html = "".join([f"<td>{int(row.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
             serv_badge = badge_map.get(serv.upper(), serv)
-            rows_servicio += f"<tr><td class='col-left'>{g}</td><td class='col-left'>{s}</td><td class='col-left'>{serv_badge}</td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
+            rows_servicio += f"<tr><td class='left'>{g}</td><td class='left'>{s}</td><td class='left'>{serv_badge}</td>{cols_html}<td><strong>{int(row['Total']):,}</strong></td></tr>\n".replace(",", ".")
     else:
         rows_servicio = "<tr><td colspan='11' style='text-align:center;'>Sin datos registrados</td></tr>"
 
@@ -254,26 +223,7 @@ def build_html_report(df, template_html_content):
         "{{TABLE_HEADER_DAYS}}": table_headers_days,
         "{{PIVOT_SERVICIO_ROWS}}": rows_servicio,
         "{{PIVOT_CONTRATAS_ROWS}}": rows_eecc,
-        "{{PIVOT_MARCAS_ROWS}}": rows_marca,
-        "{{DAYS_LABELS_JSON}}": json.dumps(labels_dias),
-        "{{GLOBAL_TOTAL_DATA_JSON}}": json.dumps(global_total),
-        "{{GLOBAL_OSP_DATA_JSON}}": json.dumps(global_osp),
-        "{{GLOBAL_MM_DATA_JSON}}": json.dumps(global_mm),
-        "{{GLOBAL_KRT_DATA_JSON}}": json.dumps(global_krt),
-        "{{BAR_ALTAS_DATA_JSON}}": json.dumps(bar_altas),
-        "{{BAR_TRASLADOS_DATA_JSON}}": json.dumps(bar_traslados),
-        "{{BAR_MIGRACIONES_DATA_JSON}}": json.dumps(bar_migraciones),
-        "{{CONTRATAS_LABELS_JSON}}": json.dumps(contratas_labels),
-        "{{CONTRATAS_VALUES_JSON}}": json.dumps(contratas_vals),
-        "{{ORANGE_ALTAS_JSON}}": json.dumps(orange_a),
-        "{{ORANGE_TRASLADOS_JSON}}": json.dumps(orange_t),
-        "{{ORANGE_MIGRACIONES_JSON}}": json.dumps(orange_m),
-        "{{MM_ALTAS_JSON}}": json.dumps(mm_a),
-        "{{MM_TRASLADOS_JSON}}": json.dumps(mm_t),
-        "{{MM_MIGRACIONES_JSON}}": json.dumps(mm_m),
-        "{{KRTV_ALTAS_JSON}}": json.dumps(krt_a),
-        "{{KRTV_TRASLADOS_JSON}}": json.dumps(krt_t),
-        "{{KRTV_MIGRACIONES_JSON}}": json.dumps(krt_m)
+        "{{PIVOT_MARCAS_ROWS}}": rows_marca
     }
 
     html_final = template_html_content
@@ -293,7 +243,7 @@ def build_html_report(df, template_html_content):
     return html_final, kpis_dict
 
 # ==========================================
-# 4. ENVÍO DE CORREO POR SMTP (CONFIG.JSON)
+# 4. ENVÍO DE CORREO POR SMTP
 # ==========================================
 def send_email_with_report(html_content, kpis, cfg):
     smtp_cfg = cfg["smtp"]
@@ -318,56 +268,10 @@ def send_email_with_report(html_content, kpis, cfg):
     if cc_list:
         msg['Cc'] = ", ".join(cc_list)
 
-    body_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <style>
-        body {{ font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: #1e293b; background: #f8fafc; margin: 0; padding: 20px; }}
-        .card {{ background: #ffffff; border-radius: 8px; border: 1px solid #e2e8f0; padding: 24px; max-width: 680px; margin: auto; }}
-        .header {{ border-bottom: 2px solid #ff6600; padding-bottom: 12px; margin-bottom: 16px; }}
-        .title {{ font-size: 18px; font-weight: bold; color: #ff6600; margin: 0; }}
-        .sub {{ font-size: 13px; color: #64748b; margin-top: 4px; }}
-        .kpi-table {{ width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }}
-        .kpi-table th, .kpi-table td {{ padding: 9px 12px; border-bottom: 1px solid #f1f5f9; }}
-        .kpi-table th {{ background-color: #fff8ee; color: #334155; text-align: left; }}
-        .btn {{ display: inline-block; background: #ff6600; color: #ffffff !important; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px; margin-top: 14px; }}
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <div class="header">
-          <div class="title">Cuadro de Mando: Evolución del Cierre de Instalaciones</div>
-          <div class="sub">Periodo: <strong>{kpis['rango']}</strong></div>
-        </div>
-        <p>Estimado equipo,</p>
-        <p>Se ha generado el resumen operativo del cierre de instalaciones para los últimos 7 días:</p>
+    # Inyección del informe completo como cuerpo principal del mensaje
+    msg.attach(MIMEText(html_content, 'html', 'utf-8'))
 
-        <table class="kpi-table">
-          <thead>
-            <tr><th>Métrica Operativa</th><th style="text-align: right;">Volumen</th></tr>
-          </thead>
-          <tbody>
-            <tr><td><strong>Total Órdenes Cerradas</strong></td><td align="right"><strong>{kpis['total']}</strong></td></tr>
-            <tr><td>Altas de Instalación</td><td align="right">{kpis['altas']}</td></tr>
-            <tr><td>Traslados</td><td align="right">{kpis['traslados']}</td></tr>
-            <tr><td>Migraciones</td><td align="right">{kpis['migraciones']}</td></tr>
-            <tr><td>Top Contrata</td><td align="right"><strong>{kpis['top_contrata']}</strong> ({kpis['top_contrata_val']})</td></tr>
-          </tbody>
-        </table>
-
-        <p style="font-size: 13px; color: #64748b;">
-          El archivo interactivo adjunto contiene los gráficos detallados de series temporales y las 3 tablas dinámicas navegables (Grupo/Servicio, Contratas y Marcas).
-        </p>
-
-        <a href="{LOOKER_URL}" class="btn" target="_blank">Ver Informe en Looker Studio</a>
-      </div>
-    </body>
-    </html>
-    """
-    msg.attach(MIMEText(body_html, 'html'))
-
+    # Adjunto opcional en formato .html
     send_attachment = report_cfg.get("send_attachment", True)
     if send_attachment:
         filename = f"cdm_evolucion_cierre_{datetime.now().strftime('%Y%m%d')}.html"
@@ -397,7 +301,7 @@ if __name__ == "__main__":
         with open(template_path, "r", encoding="utf-8") as f:
             template_code = f.read()
     else:
-        logging.warning(f"No se encontró {template_path}. Asegúrate de exportar el HTML de la Sección 3 como plantilla.")
+        logging.warning(f"No se encontró {template_path}. Asegúrate de guardar la plantilla de la Sección 3.")
         sys.exit(1)
 
     df_data = fetch_bigquery_data(CFG)
