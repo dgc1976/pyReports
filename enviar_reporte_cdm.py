@@ -2,21 +2,30 @@
 # -*- coding: utf-8 -*-
 """
 Script de Automatización: Cuadro de Mando de Instalaciones (Looker Studio / BigQuery)
-Consulta mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE en la región EU,
-genera el cuerpo de correo idéntico a cdm_provision.html y lo envía por SMTP.
+Genera gráficos embebidos (CID) y tablas dinámicas idénticas a cdm_provision.html,
+enviándolo por correo electrónico mediante el relay SMTP configurado en config.json.
 """
 
 import os
 import sys
+import io
 import json
 import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
 from email.mime.base import MIMEBase
 from email import encoders
 from datetime import datetime, date, timedelta
 import pandas as pd
+import numpy as np
+
+# Generador de gráficos para entornos sin servidor X11 / headless
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 from google.cloud import bigquery
 
 # ==========================================
@@ -64,10 +73,7 @@ def load_configuration(path=CONFIG_FILE_PATH):
                         default_cfg[k] = v
             print(f"Configuración cargada con éxito desde: {path}")
         except Exception as e:
-            print(f"Aviso: Error al leer {path} ({e}). Usando configuración por defecto.")
-    else:
-        print(f"Aviso: {path} no encontrado. Usando configuración base.")
-
+            print(f"Aviso: Error al leer {path} ({e}). Usando configuración base.")
     return default_cfg
 
 CFG = load_configuration()
@@ -111,26 +117,123 @@ def fetch_bigquery_data(cfg):
         FORMAT_DATE('%d %b', DATE(report_date)) AS label_dia,
         COALESCE(brand_group, 'NO_DEFINIDO') AS grupo,
         COALESCE(activity_group_soho_masivo, activity_group, 'NO_DEFINIDO') AS segmento,
-        COALESCE(service_operation, order_category, 'OTROS') AS servicio,
+        UPPER(COALESCE(service_operation, order_category, 'OTROS')) AS servicio,
         COALESCE(normalized_contracts, 'OTRAS') AS contrata,
         COALESCE(normalized_brand, 'OTRAS') AS marca,
-        SUM(COALESCE(num_done_orders, 0)) AS ordenes_cerradas,
-        SUM(COALESCE(num_in_ot, 0)) AS ordenes_entradas
+        SUM(COALESCE(num_done_orders, 0)) AS ordenes_cerradas
     FROM `{target_table}`
     WHERE DATE(report_date) BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY) AND CURRENT_DATE()
+      AND COALESCE(num_done_orders, 0) > 0
     GROUP BY 1, 2, 3, 4, 5, 6, 7
     ORDER BY dia_cierre ASC;
     """
 
     query_job = client.query(query_sql, location=loc)
     df = query_job.to_dataframe()
-    logging.info(f"¡Éxito! {len(df)} registros agregados obtenidos desde BigQuery.")
+    logging.info(f"¡Éxito! {len(df)} filas extraídas desde BigQuery.")
     return df
 
 # ==========================================
-# 3. PROCESAMIENTO ANALÍTICO Y GENERACIÓN HTML
+# 3. GENERACIÓN DE GRÁFICOS (PNG EN MEMORIA)
 # ==========================================
-def build_html_report(df, template_html_content):
+def generate_chart_images(df, dias_unicos, labels_dias):
+    """
+    Genera en memoria (bytes PNG) los 6 gráficos correspondientes a cdm_provision.html.
+    """
+    charts = {}
+    plt.rcParams['font.sans-serif'] = 'Arial'
+    plt.rcParams['axes.edgecolor'] = '#cbd5e1'
+    plt.rcParams['axes.linewidth'] = 0.8
+
+    # 1. Serie Temporal Global (Total, OSP, MásMóvil, KRTV)
+    piv_grp = df.pivot_table(index='dia_cierre', columns='grupo', values='ordenes_cerradas', aggfunc='sum', fill_value=0) if not df.empty else pd.DataFrame()
+    piv_grp = piv_grp.reindex(dias_unicos, fill_value=0)
+    total_dia = [int(df[df['dia_cierre'] == d]['ordenes_cerradas'].sum()) if not df.empty else 0 for d in dias_unicos]
+    osp_dia = [int(piv_grp.get('ORANGE', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
+    mm_dia = [int(piv_grp.get('MAS MOVIL', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
+    krt_dia = [int(piv_grp.get('KRTV', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
+
+    fig, ax = plt.subplots(figsize=(6.2, 3.2), dpi=150)
+    ax.plot(labels_dias, total_dia, label='Órdenes Cerradas', color='#22c55e', linestyle='--', linewidth=2.5, marker='o')
+    ax.plot(labels_dias, osp_dia, label='OSP (Orange)', color='#f97316', linewidth=2, marker='o')
+    ax.plot(labels_dias, mm_dia, label='MAS MOVIL', color='#eab308', linewidth=2, marker='o')
+    ax.plot(labels_dias, krt_dia, label='KRTV', color='#0ea5e9', linewidth=2, marker='o')
+    ax.set_title('Serie Temporal: Órdenes Cerradas por Grupo', fontsize=10, fontweight='bold', color='#1e293b')
+    ax.grid(axis='y', linestyle=':', alpha=0.6)
+    ax.legend(frameon=False, fontsize=8, loc='upper left')
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    plt.close(fig)
+    charts['chart_timeseries'] = buf.getvalue()
+
+    # 2. Barras por Servicio (Alta, Traslado, Migración)
+    piv_srv = df.pivot_table(index='dia_cierre', columns='servicio', values='ordenes_cerradas', aggfunc='sum', fill_value=0) if not df.empty else pd.DataFrame()
+    piv_srv = piv_srv.reindex(dias_unicos, fill_value=0)
+    b_alta = [int(piv_srv.get('ALTA', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
+    b_tras = [int(piv_srv.get('TRASLADO', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
+    b_migr = [int(piv_srv.get('MIGRACION', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos]
+
+    x = np.arange(len(labels_dias))
+    width = 0.26
+    fig, ax = plt.subplots(figsize=(6.2, 3.2), dpi=150)
+    ax.bar(x - width, b_alta, width, label='ALTA', color='#8aa9ff')
+    ax.bar(x, b_tras, width, label='TRASLADO', color='#f8b4a6')
+    ax.bar(x + width, b_migr, width, label='MIGRACION', color='#df5353')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels_dias, fontsize=8)
+    ax.set_title('Evolución Diaria por Servicio', fontsize=10, fontweight='bold', color='#1e293b')
+    ax.grid(axis='y', linestyle=':', alpha=0.6)
+    ax.legend(frameon=False, fontsize=8)
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    plt.close(fig)
+    charts['chart_service_bar'] = buf.getvalue()
+
+    # 3. Ranking de Contratas (Horizontal)
+    contratas_grp = df.groupby('contrata')['ordenes_cerradas'].sum().sort_values(ascending=True) if not df.empty else pd.Series()
+    top_c = contratas_grp.tail(8)
+    fig, ax = plt.subplots(figsize=(6.2, 3.2), dpi=150)
+    ax.barh(list(top_c.index), list(top_c.values), color='#a3d9a5', edgecolor='#86efac', height=0.6)
+    ax.set_title('Cierres Acumulados por Contrata', fontsize=10, fontweight='bold', color='#1e293b')
+    ax.grid(axis='x', linestyle=':', alpha=0.6)
+    for i, v in enumerate(top_c.values):
+        ax.text(v + (max(top_c.values)*0.01), i, f"{v:,}".replace(",", "."), va='center', fontsize=7.5, color='#334155')
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    plt.close(fig)
+    charts['chart_contratas'] = buf.getvalue()
+
+    # Función auxiliar para gráficos de líneas de subgrupos
+    def line_subgroup(group_name, title_txt):
+        sub_df = df[df['grupo'] == group_name] if not df.empty else pd.DataFrame()
+        p = sub_df.pivot_table(index='dia_cierre', columns='servicio', values='ordenes_cerradas', aggfunc='sum', fill_value=0) if not sub_df.empty else pd.DataFrame()
+        p = p.reindex(dias_unicos, fill_value=0)
+        fig, ax = plt.subplots(figsize=(6.2, 3.2), dpi=150)
+        ax.plot(labels_dias, [int(p.get('ALTA', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos], label='ALTA', color='#8aa9ff', marker='o')
+        ax.plot(labels_dias, [int(p.get('TRASLADO', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos], label='TRASLADO', color='#f8b4a6', marker='o')
+        ax.plot(labels_dias, [int(p.get('MIGRACION', pd.Series(0, index=dias_unicos))[d]) for d in dias_unicos], label='MIGRACION', color='#df5353', marker='o')
+        ax.set_title(title_txt, fontsize=10, fontweight='bold', color='#1e293b')
+        ax.grid(axis='y', linestyle=':', alpha=0.6)
+        ax.legend(frameon=False, fontsize=8)
+        plt.tight_layout()
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close(fig)
+        return buf.getvalue()
+
+    charts['chart_orange'] = line_subgroup('ORANGE', 'Grupo ORANGE por Servicio')
+    charts['chart_masmovil'] = line_subgroup('MAS MOVIL', 'Grupo MAS MOVIL por Servicio')
+    charts['chart_krtv'] = line_subgroup('KRTV', 'Grupo KRTV por Servicio')
+
+    return charts
+
+# ==========================================
+# 4. CONSTRUCCIÓN DE TABLAS Y CONTENIDO
+# ==========================================
+def build_html_report(df, template_content):
     today = date.today()
     start_date = today - timedelta(days=6)
     rango_txt = f"{start_date.strftime('%d %b')} – {today.strftime('%d %b %Y')}"
@@ -143,9 +246,9 @@ def build_html_report(df, template_html_content):
         labels_dias = [pd.to_datetime(d).strftime('%d %b') for d in dias_unicos]
 
     total_cierres = int(df['ordenes_cerradas'].sum()) if not df.empty else 0
-    altas_df = df[df['servicio'].str.upper() == 'ALTA'] if not df.empty else pd.DataFrame()
-    traslados_df = df[df['servicio'].str.upper() == 'TRASLADO'] if not df.empty else pd.DataFrame()
-    migraciones_df = df[df['servicio'].str.upper() == 'MIGRACION'] if not df.empty else pd.DataFrame()
+    altas_df = df[df['servicio'] == 'ALTA'] if not df.empty else pd.DataFrame()
+    traslados_df = df[df['servicio'] == 'TRASLADO'] if not df.empty else pd.DataFrame()
+    migraciones_df = df[df['servicio'] == 'MIGRACION'] if not df.empty else pd.DataFrame()
 
     altas_tot = int(altas_df['ordenes_cerradas'].sum()) if not altas_df.empty else 0
     traslados_tot = int(traslados_df['ordenes_cerradas'].sum()) if not traslados_df.empty else 0
@@ -161,12 +264,11 @@ def build_html_report(df, template_html_content):
         top_contrata_val = int(contratas_grp.iloc[0]) if not contratas_grp.empty else 0
         top_contrata_pct = round((top_contrata_val / total_cierres * 100), 1) if total_cierres else 0
     else:
-        contratas_grp = pd.Series(dtype=int)
         top_contrata, top_contrata_val, top_contrata_pct = "N/A", 0, 0
 
     table_headers_days = "".join([f"<th>{l}</th>" for l in labels_dias])
 
-    # Tabla dinámica: Contratas
+    # 1. Tabla Dinámica Contratas
     if not df.empty:
         piv_eecc = df.pivot_table(index='contrata', columns='dia_cierre', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
         piv_eecc['Total'] = piv_eecc.sum(axis=1)
@@ -178,7 +280,7 @@ def build_html_report(df, template_html_content):
     else:
         rows_eecc = "<tr><td colspan='9' style='text-align:center;'>Sin datos registrados</td></tr>"
 
-    # Tabla dinámica: Marcas
+    # 2. Tabla Dinámica Marcas
     if not df.empty:
         piv_marca = df.pivot_table(index='marca', columns='dia_cierre', values='ordenes_cerradas', aggfunc='sum', fill_value=0)
         piv_marca['Total'] = piv_marca.sum(axis=1)
@@ -190,7 +292,7 @@ def build_html_report(df, template_html_content):
     else:
         rows_marca = "<tr><td colspan='9' style='text-align:center;'>Sin datos registrados</td></tr>"
 
-    # Tabla dinámica: Servicio & Segmento (con subtotales idénticos a cdm_provision.html)
+    # 3. Tabla Dinámica Servicio & Segmento (con subtotales idénticos a cdm_provision.html)
     rows_servicio = ""
     if not df.empty:
         grupos_orden = ['ORANGE', 'MAS MOVIL', 'KRTV'] + [g for g in df['grupo'].unique() if g not in ['ORANGE', 'MAS MOVIL', 'KRTV']]
@@ -208,7 +310,7 @@ def build_html_report(df, template_html_content):
                 df_gs = df_g[df_g['segmento'] == seg]
                 servicios = ['ALTA', 'TRASLADO', 'MIGRACION'] + [s for s in df_gs['servicio'].unique() if s.upper() not in ['ALTA', 'TRASLADO', 'MIGRACION']]
                 for srv in servicios:
-                    df_gss = df_gs[df_gs['servicio'].str.upper() == srv.upper()]
+                    df_gss = df_gs[df_gs['servicio'] == srv]
                     if df_gss.empty:
                         continue
                     piv_s = df_gss.groupby('dia_cierre')['ordenes_cerradas'].sum()
@@ -216,13 +318,11 @@ def build_html_report(df, template_html_content):
                     tot_srv = int(piv_s.sum())
                     badge = badge_map.get(srv.upper(), f'<span class="badge-serv">{srv}</span>')
                     rows_servicio += f"<tr><td class='col-left'><strong>{grp}</strong></td><td class='col-left'>{seg}</td><td class='col-left'>{badge}</td>{cols_html}<td>{tot_srv:,}</td></tr>\n".replace(",", ".")
-                
-                # Subtotal Segmento
+
                 piv_seg = df_gs.groupby('dia_cierre')['ordenes_cerradas'].sum()
                 cols_sub = "".join([f"<td>{int(piv_seg.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
                 rows_servicio += f"<tr class='row-subtotal'><td class='col-left' colspan='3'>Subtotal {seg}</td>{cols_sub}<td>{int(piv_seg.sum()):,}</td></tr>\n".replace(",", ".")
-            
-            # Subtotal Grupo
+
             piv_grp = df_g.groupby('dia_cierre')['ordenes_cerradas'].sum()
             cols_grp = "".join([f"<td>{int(piv_grp.get(d, 0)):,}</td>".replace(",", ".") for d in dias_unicos])
             rows_servicio += f"<tr class='row-total-group'><td class='col-left' colspan='3'>Total {grp}</td>{cols_grp}<td><strong>{int(piv_grp.sum()):,}</strong></td></tr>\n".replace(",", ".")
@@ -247,7 +347,7 @@ def build_html_report(df, template_html_content):
         "{{PIVOT_MARCAS_ROWS}}": rows_marca
     }
 
-    html_final = template_html_content
+    html_final = template_content
     for tag, val in replacements.items():
         html_final = html_final.replace(tag, val)
 
@@ -256,12 +356,13 @@ def build_html_report(df, template_html_content):
         "total": f"{total_cierres:,}".replace(",", ".")
     }
 
-    return html_final, kpis_dict
+    chart_images = generate_chart_images(df, dias_unicos, labels_dias)
+    return html_final, kpis_dict, chart_images
 
 # ==========================================
-# 4. ENVÍO DE CORREO POR SMTP
+# 5. ENVÍO SMTP CON IMÁGENES EMBEBIDAS
 # ==========================================
-def send_email_with_report(html_content, kpis, cfg):
+def send_email_with_report(html_content, kpis, chart_images, cfg):
     smtp_cfg = cfg["smtp"]
     report_cfg = cfg.get("reports", {}).get("ir", {})
 
@@ -277,67 +378,75 @@ def send_email_with_report(html_content, kpis, cfg):
     today_str = datetime.now().strftime('%d/%m/%Y')
     subject = f"{subject_prefix} - Evolución del Cierre ({kpis['rango']}) - {today_str}"
 
-    msg = MIMEMultipart('mixed')
-    msg['Subject'] = subject
-    msg['From'] = sender
-    msg['To'] = ", ".join(recipients)
+    # Estructura MIMEMultipart('related') para permitir imágenes embebidas (CID)
+    msg_root = MIMEMultipart('related')
+    msg_root['Subject'] = subject
+    msg_root['From'] = sender
+    msg_root['To'] = ", ".join(recipients)
     if cc_list:
-        msg['Cc'] = ", ".join(cc_list)
+        msg_root['Cc'] = ", ".join(cc_list)
 
-    # El cuerpo del correo es exactamente el HTML del dashboard
-    msg.attach(MIMEText(html_content, 'html', 'utf-8'))
+    msg_alt = MIMEMultipart('alternative')
+    msg_root.attach(msg_alt)
 
-    # Adjuntar también el archivo .html para visualización local
-    send_attachment = report_cfg.get("send_attachment", True)
-    if send_attachment:
+    # Adjuntar HTML en el cuerpo
+    msg_alt.attach(MIMEText(html_content, 'html', 'utf-8'))
+
+    # Adjuntar cada gráfico referenciado como cid:chart_...
+    for cid_name, img_bytes in chart_images.items():
+        img_part = MIMEImage(img_bytes)
+        img_part.add_header('Content-ID', f'<{cid_name}>')
+        img_part.add_header('Content-Disposition', 'inline', filename=f"{cid_name}.png")
+        msg_root.attach(img_part)
+
+    # Adjuntar también el archivo HTML para abrir fuera del correo
+    if report_cfg.get("send_attachment", True):
         filename = f"cdm_evolucion_cierre_{datetime.now().strftime('%Y%m%d')}.html"
         attachment = MIMEBase('application', 'octet-stream')
         attachment.set_payload(html_content.encode('utf-8'))
         encoders.encode_base64(attachment)
         attachment.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-        msg.attach(attachment)
+        msg_root.attach(attachment)
 
-    logging.info(f"Conectando a {server_host}:{server_port} (TLS={use_tls})...")
+    logging.info(f"Conectando al servidor SMTP {server_host}:{server_port}...")
     server = smtplib.SMTP(server_host, server_port)
     if use_tls:
         server.starttls()
-
-    server.sendmail(sender, all_to, msg.as_string())
+    server.sendmail(sender, all_to, msg_root.as_string())
     server.quit()
-    logging.info(f"Correo enviado correctamente a: {', '.join(all_to)}")
+    logging.info(f"¡Correo enviado con éxito a {', '.join(all_to)} con los 6 gráficos embebidos!")
 
 # ==========================================
-# 5. PUNTO DE ENTRADA PRINCIPAL
+# 6. ENTRADA PRINCIPAL
 # ==========================================
 if __name__ == "__main__":
-    logging.info("=== Inicio del proceso de generación y envío de CDM ===")
+    logging.info("=== Inicio de generación de CDM de Instalaciones ===")
 
-    template_path = os.getenv("TEMPLATE_PATH", "plantilla_cdm.html")
+    template_path = os.getenv("TEMPLATE_PATH", "plantilla_cdm_mail.html")
     if os.path.exists(template_path):
         with open(template_path, "r", encoding="utf-8") as f:
             template_code = f.read()
     else:
-        logging.warning(f"No se encontró {template_path}. Asegúrate de guardar la plantilla de la Sección 3.")
+        logging.error(f"No se encontró la plantilla en {template_path}. Guarda la Sección 3 en dicho archivo.")
         sys.exit(1)
 
     df_data = fetch_bigquery_data(CFG)
-    html_final, kpis = build_html_report(df_data, template_code)
+    html_final, kpis, charts = build_html_report(df_data, template_code)
 
     local_dir = CFG.get("reports", {}).get("ir", {}).get("local_output_dir", "./output")
     try:
         os.makedirs(local_dir, exist_ok=True)
         local_output_file = os.path.join(local_dir, f"cdm_instalaciones_{date.today().strftime('%Y%m%d')}.html")
-    except Exception as e:
-        logging.warning(f"No fue posible escribir en {local_dir} ({e}). Guardando en directorio local.")
+    except Exception:
         local_output_file = f"cdm_instalaciones_{date.today().strftime('%Y%m%d')}.html"
 
     with open(local_output_file, "w", encoding="utf-8") as f:
         f.write(html_final)
-    logging.info(f"Reporte HTML guardado localmente en: {local_output_file}")
+    logging.info(f"Archivo HTML persistido en: {local_output_file}")
 
     try:
-        send_email_with_report(html_final, kpis, CFG)
+        send_email_with_report(html_final, kpis, charts, CFG)
     except Exception as e:
-        logging.error(f"Error al enviar el correo por SMTP: {e}", exc_info=True)
+        logging.error(f"Error al enviar correo por SMTP: {e}", exc_info=True)
 
-    logging.info("=== Proceso finalizado ===")
+    logging.info("=== Proceso finalizado correctamente ===")
