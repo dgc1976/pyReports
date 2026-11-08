@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Script de Automatización: Cuadro de Mando de Instalaciones (Looker Studio / BigQuery)
-Consulta mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE, realiza introspección
-automática de columnas para evitar fallos de nombres de campos, genera el HTML interactivo
-y lo envía mediante el relay SMTP de config.json.
+Consulta mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE en la región EU,
+genera el HTML interactivo y lo envía mediante el relay SMTP configurado en config.json.
 """
 
 import os
@@ -19,7 +18,6 @@ from email import encoders
 from datetime import datetime, date, timedelta
 import pandas as pd
 from google.cloud import bigquery
-from google.api_core.exceptions import NotFound, BadRequest
 
 # ==========================================
 # 1. CARGA DE CONFIG.JSON & LOGGING
@@ -31,7 +29,6 @@ def load_configuration(path=CONFIG_FILE_PATH):
         "bigquery": {
             "project_id": "mo-provision-reporting",
             "table_name": "mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE",
-            "dataset_table_ir": "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod",
             "location": "EU"
         },
         "smtp": {
@@ -97,117 +94,39 @@ logging.basicConfig(
 LOOKER_URL = "https://datastudio.google.com/reporting/cc244b22-6794-4bd5-bf1f-66d2c4a64317/page/baECG"
 
 # ==========================================
-# 2. INTROSPECCIÓN Y EXTRACCIÓN DINÁMICA
+# 2. EXTRACCIÓN DIRECTA DESDE BIGQUERY
 # ==========================================
-def inspect_and_build_query(client, table_fqdn, loc):
-    """
-    Inspecciona las columnas reales de la tabla/vista en INFORMATION_SCHEMA
-    para mapear los nombres exactos de los campos disponibles.
-    """
-    parts = table_fqdn.replace("`", "").split(".")
-    if len(parts) == 3:
-        project, dataset, table_name = parts
-    elif len(parts) == 2:
-        project = client.project
-        dataset, table_name = parts
-    else:
-        raise ValueError(f"Nombre de tabla no válido: {table_fqdn}")
-
-    col_query = f"""
-    SELECT column_name
-    FROM `{project}.{dataset}.INFORMATION_SCHEMA.COLUMNS`
-    WHERE table_name = '{table_name}'
-    """
-    logging.info(f"Inspeccionando esquema en `{project}.{dataset}.{table_name}` ({loc})...")
-    cols_df = client.query(col_query, location=loc).to_dataframe()
-    cols = [c.upper() for c in cols_df['column_name'].tolist()]
-    logging.info(f"Columnas detectadas ({len(cols)}): {cols[:15]}...")
-
-    # Identificar columna de fecha de cierre
-    fecha_cierre_col = None
-    for candidate in ['FECHA_CIERRE', 'DIA_CIERRE', 'F_CIERRE', 'FECHA_FIN', 'DIA', 'FECHA']:
-        if candidate in cols:
-            fecha_cierre_col = candidate
-            break
-
-    if not fecha_cierre_col:
-        date_candidates = [c for c in cols if 'CIERRE' in c or 'FECHA' in c or 'DIA' in c]
-        if date_candidates:
-            fecha_cierre_col = date_candidates[0]
-        else:
-            raise RuntimeError(f"No se detectó ninguna columna de fecha en la vista {table_fqdn}. Columnas: {cols}")
-
-    logging.info(f"-> Columna de fecha seleccionada: `{fecha_cierre_col}`")
-
-    # Mapeo de otras dimensiones con fallbacks
-    def resolve_col(candidates, default_val):
-        for cand in candidates:
-            if cand in cols:
-                return cand
-        return f"'{default_val}'"
-
-    col_grupo = resolve_col(['GRUPO', 'OPERADOR', 'GRUPO_OPERADOR'], 'NO_DEFINIDO')
-    col_segmento = resolve_col(['SEGMENTO', 'SEGMENTO_DESC', 'TIPO_CLIENTE'], 'NO_DEFINIDO')
-    col_servicio = resolve_col(['SERVICIO', 'TIPO_SERVICIO', 'TIPO_OPERACION', 'TIPO_ORDEN'], 'OTROS')
-    col_contrata = resolve_col(['CONTRATA', 'EECC', 'EMPRESA_COLABORADORA'], 'OTRAS')
-    col_marca = resolve_col(['MARCA', 'MARCA_COMERCIAL'], 'OTRAS')
-    col_id = resolve_col(['ID_ORDEN', 'NUM_ORDEN', 'ORDEN_ID', 'ID'], '1')
-
-    query_sql = f"""
-    SELECT
-        DATE({fecha_cierre_col}) AS dia_cierre,
-        FORMAT_DATE('%d %b', DATE({fecha_cierre_col})) AS label_dia,
-        COALESCE(CAST({col_grupo} AS STRING), 'NO_DEFINIDO') AS grupo,
-        COALESCE(CAST({col_segmento} AS STRING), 'NO_DEFINIDO') AS segmento,
-        COALESCE(CAST({col_servicio} AS STRING), 'OTROS') AS servicio,
-        COALESCE(CAST({col_contrata} AS STRING), 'OTRAS') AS contrata,
-        COALESCE(CAST({col_marca} AS STRING), 'OTRAS') AS marca,
-        COUNT(DISTINCT {col_id}) AS ordenes_cerradas
-    FROM `{project}.{dataset}.{table_name}`
-    WHERE DATE({fecha_cierre_col}) BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY) AND CURRENT_DATE()
-    GROUP BY 1, 2, 3, 4, 5, 6, 7
-    ORDER BY dia_cierre ASC;
-    """
-    return query_sql
-
 def fetch_bigquery_data(cfg):
     bq_cfg = cfg.get("bigquery", {})
     project_id = bq_cfg.get("project_id", "mo-provision-reporting")
-    configured_table = bq_cfg.get("table_name", "mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE")
+    target_table = bq_cfg.get("table_name", "mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE")
+    loc = bq_cfg.get("location", "EU")
 
-    tablas_candidatas = [
-        configured_table,
-        "mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE",
-        "mo-provision-reporting.INSTALLATIONS_prod.VW_ENTRADA_CIERRE",
-        "mo-provision-reporting.INSTALLATION_prod.VW_ENTRADA_CIERRE"
-    ]
-    tablas_candidatas = list(dict.fromkeys(tablas_candidatas))
-    regiones_candidatas = [bq_cfg.get("location", "EU"), "europe-southwest1", "europe-west1"]
-    regiones_candidatas = list(dict.fromkeys(regiones_candidatas))
+    logging.info(f"Conectando a BigQuery: `{target_table}` (Región: {loc})...")
+    client = bigquery.Client(project=project_id, location=loc)
 
-    ultimo_error = None
+    # Consulta directa utilizando los campos confirmados de la tabla
+    query_sql = f"""
+    SELECT
+        DATE(report_date) AS dia_cierre,
+        FORMAT_DATE('%d %b', DATE(report_date)) AS label_dia,
+        COALESCE(brand_group, 'NO_DEFINIDO') AS grupo,
+        COALESCE(activity_group_soho_masivo, activity_group, 'NO_DEFINIDO') AS segmento,
+        COALESCE(service_operation, order_category, 'OTROS') AS servicio,
+        COALESCE(normalized_contracts, 'OTRAS') AS contrata,
+        COALESCE(normalized_brand, 'OTRAS') AS marca,
+        SUM(COALESCE(num_done_orders, 0)) AS ordenes_cerradas,
+        SUM(COALESCE(num_in_ot, 0)) AS ordenes_entradas
+    FROM `{target_table}`
+    WHERE DATE(report_date) BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 6 DAY) AND CURRENT_DATE()
+    GROUP BY 1, 2, 3, 4, 5, 6, 7
+    ORDER BY dia_cierre ASC;
+    """
 
-    for target_table in tablas_candidatas:
-        for loc in regiones_candidatas:
-            logging.info(f"Intentando conexión en: `{target_table}` (Región: {loc})...")
-            try:
-                client = bigquery.Client(project=project_id, location=loc)
-                query_sql = inspect_and_build_query(client, target_table, loc)
-                query_job = client.query(query_sql, location=loc)
-                df = query_job.to_dataframe()
-                logging.info(f"¡Éxito! Datos extraídos correctamente desde `{target_table}` ({loc}): {len(df)} filas.")
-                return df
-            except (NotFound, BadRequest) as ex:
-                msg = ex.message if hasattr(ex, 'message') else str(ex)
-                logging.warning(f"Fallo en `{target_table}` ({loc}): {msg}")
-                ultimo_error = ex
-                continue
-            except Exception as e:
-                logging.error(f"Error inesperado consultando `{target_table}`: {e}")
-                ultimo_error = e
-                break
-
-    raise RuntimeError(f"No fue posible consultar ninguna de las combinaciones. Último error: {ultimo_error}")
+    query_job = client.query(query_sql, location=loc)
+    df = query_job.to_dataframe()
+    logging.info(f"¡Éxito! {len(df)} registros agregados obtenidos desde BigQuery.")
+    return df
 
 # ==========================================
 # 3. PROCESAMIENTO ANALÍTICO Y GENERACIÓN HTML
