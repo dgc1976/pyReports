@@ -2,6 +2,7 @@
   "bigquery": {
     "project_id": "mo-provision-reporting",
     "dataset_table_ir": "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod"
+    "location": "europe-southwest1"
   },
   "sharepoint": {
     "credentials_ini_path": "D:\\Automaticos\\Talend\\Sharepoint\\config.ini",
