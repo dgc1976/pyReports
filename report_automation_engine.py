@@ -11,7 +11,8 @@ Capas:
   4. BigQueryExtractor: Conexión y ejecución en Google Cloud BigQuery.
   5. BaseReportProcessor (ABC): Contrato base para procesar cualquier reporte.
   6. IRReportProcessor: Especialización para IR, Resumen IR Segmentado, CDM por Actividad
-                        (Toda la Actividad, AyT Masivo, Migraciones, B2B) y CDM Provincial.
+                        (Toda la Actividad, Altas/Traslados, Solo Migraciones, B2B) y CDM Provincial.
+                        Exclusión estricta de FOL, ICONO, NO_DEFINIDO, OTROS, SIN CONTRATA y FICTICIA.
   7. SMTPEmailSender: Relay corporativo SMTP (fsp.si.orange.es:587).
   8. ReportPipeline: Orquestador del ciclo de vida (BQ -> HTML -> SharePoint -> Email compacto).
 
@@ -399,7 +400,8 @@ class BaseReportProcessor(ABC):
 # 6. IMPLEMENTACIÓN: REPORTE IR COMPACTO CON TODOS LOS CDMS DE LOOKER
 # ==============================================================================
 class IRReportProcessor(BaseReportProcessor):
-    EXCLUDED_CONTRATAS = {"FOL", "ICONO", "NO_DEFINIDO", "OTROS", "SIN CONTRATA"}
+    # Exclusión estricta de contratas inactivas y FICTICIA
+    EXCLUDED_CONTRATAS = {"FOL", "ICONO", "NO_DEFINIDO", "OTROS", "SIN CONTRATA", "FICTICIA"}
 
     def __init__(self, table_name: str):
         self.table_name = table_name
@@ -426,11 +428,28 @@ class IRReportProcessor(BaseReportProcessor):
         WITH TOTAL_IR AS (
           SELECT 
             *,
-            -- Banderas de Segmentación Operativa de Looker
+            -- Banderas de Segmentación Operativa de Looker ampliadas:
             CASE WHEN service_operation IN ('ALTA', 'TRASLADO', 'MIGRACION', 'SWAP', 'MIGRACION ACOMETIDA') THEN TRUE ELSE FALSE END AS Filtro_NORMALIZADO,
             CASE WHEN service_operation NOT IN ('SWAP') THEN TRUE ELSE FALSE END AS Filtro_NoSwap,
-            CASE WHEN service_operation IN ('ALTA', 'TRASLADO') AND activity_group = 'MASIVO' THEN TRUE ELSE FALSE END AS Filtro_AyTMasivo,
-            CASE WHEN service_operation IN ('MIGRACION', 'MIGRACION ACOMETIDA') AND activity_group = 'MASIVO' THEN TRUE ELSE FALSE END AS Filtro_MigMasivo,
+
+            -- Altas y Traslados (operaciones no-swap y no-migración, incluyendo todas sus variantes)
+            CASE 
+              WHEN service_operation NOT IN ('SWAP', 'MIGRACION', 'MIGRACION ACOMETIDA') 
+                   AND UPPER(service_operation) NOT LIKE '%SWAP%' 
+                   AND UPPER(service_operation) NOT LIKE '%MIGRACION%'
+              THEN TRUE 
+              ELSE FALSE 
+            END AS Filtro_AyTMasivo,
+
+            -- Solo Migraciones (incluye MIGRACION, MIGRACION ACOMETIDA y cualquier variante operativa)
+            CASE 
+              WHEN service_operation IN ('MIGRACION', 'MIGRACION ACOMETIDA') 
+                   OR UPPER(service_operation) LIKE '%MIGRACION%'
+              THEN TRUE 
+              ELSE FALSE 
+            END AS Filtro_MigMasivo,
+
+            -- Solo B2B
             CASE WHEN activity_group = 'B2B' THEN TRUE ELSE FALSE END AS Filtro_B2B,
 
             CASE WHEN tipo = 'Rec' THEN total_3_dias ELSE 0 END AS MediaRecibidas,
@@ -460,7 +479,7 @@ class IRReportProcessor(BaseReportProcessor):
             CASE WHEN brand_group IN ('MAS MOVIL', 'KRTV') THEN total_pospuesta ELSE 0 END AS TotalPospuestaMM_KRTV
           FROM `{self.table_name}`
           WHERE fecha_referencia = '{date_str}'
-            AND UPPER(TRIM(normalized_contracts)) NOT IN ('FOL', 'ICONO', 'NO_DEFINIDO', 'OTROS', 'SIN CONTRATA')
+            AND UPPER(TRIM(normalized_contracts)) NOT IN ('FOL', 'ICONO', 'NO_DEFINIDO', 'OTROS', 'SIN CONTRATA', 'FICTICIA')
             AND normalized_contracts IS NOT NULL
         )
         SELECT 
@@ -641,9 +660,9 @@ class IRReportProcessor(BaseReportProcessor):
 
     def transform_data(self, raw_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Calcula las estructuras completas de Looker Studio excluyendo contratas inactivas:
-          - Elimina FOL, ICONO, NO_DEFINIDO, OTROS.
-          - Incorpora los nuevos CDMs segmentados (Toda la Actividad, AyT, Migraciones, B2B).
+        Calcula las estructuras completas de Looker Studio excluyendo contratas inactivas y FICTICIA:
+          - Elimina FOL, ICONO, NO_DEFINIDO, OTROS, FICTICIA.
+          - Incorpora los nuevos CDMs segmentados (Toda la Actividad, Altas/Traslados, Migraciones, B2B).
           - Incorpora la lista detallada CDM por Grupo Marcas, Contrata y Provincia.
         """
         ir_raw = {}
@@ -1027,7 +1046,7 @@ class IRReportProcessor(BaseReportProcessor):
         # Formatear Tabla IR de Looker por Contrata
         looker_ir_contratas = {}
         for c, d in sorted(ir_raw.items()):
-            ir_val = (d["bolsa"] / d["rea_media"] ) if d["rea_media"] > 0 else 0
+            ir_val = (d["bolsa"] / d["rea_media"]) if d["rea_media"] > 0 else 0
             ir_ayer_val = (d["bolsa"] / d["real_ayer"]) if d["real_ayer"] > 0 else 0
             looker_ir_contratas[c] = {
                 "rec_media": self._fmt(round(d["rec_media"])),
@@ -1405,11 +1424,11 @@ class IRReportProcessor(BaseReportProcessor):
         Renderiza el cuerpo HTML ultracompacto para el correo:
           - Incluye los 4 Cuadros de Mando (CDM) segmentados de Looker:
               1. Toda la Actividad (menos SWAP)
-              2. Altas y Traslados (Masivo)
-              3. Solo Migraciones (Masivo)
+              2. Altas y Traslados
+              3. Solo Migraciones (incluyendo MIGRACION ACOMETIDA y variantes)
               4. Solo B2B
           - Incluye el Cuadro de Mando Detallado por Provincia.
-          - Sin contratas inactivas (FOL, ICONO, NO_DEFINIDO, OTROS eliminadas).
+          - Sin contratas inactivas ni FICTICIA (FOL, ICONO, NO_DEFINIDO, OTROS, FICTICIA eliminadas).
         """
         template_str = """
         <!DOCTYPE html>
@@ -1601,9 +1620,9 @@ class IRReportProcessor(BaseReportProcessor):
             </tbody>
           </table>
 
-          <!-- 2. CDM SEGMENTADO: ALTAS Y TRASLADOS (MASIVO) -->
+          <!-- 2. CDM SEGMENTADO: ALTAS Y TRASLADOS -->
           <div style="font-size: 13px; font-weight: 800; color: #ff5722; margin-bottom: 4px;">
-            IR - Altas y Traslados (Masivo)
+            IR - Altas y Traslados
           </div>
           <table width="100%" cellpadding="3" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 10px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
@@ -1662,9 +1681,9 @@ class IRReportProcessor(BaseReportProcessor):
             </tbody>
           </table>
 
-          <!-- 3. CDM SEGMENTADO: SOLO MIGRACIONES (MASIVO) -->
+          <!-- 3. CDM SEGMENTADO: SOLO MIGRACIONES -->
           <div style="font-size: 13px; font-weight: 800; color: #ff5722; margin-bottom: 4px;">
-            IR - Solo Migraciones (Masivo)
+            IR - Solo Migraciones
           </div>
           <table width="100%" cellpadding="3" cellspacing="0" border="0" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 10px; text-align: right; margin-bottom: 14px; border-collapse: collapse;">
             <thead>
