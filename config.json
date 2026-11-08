@@ -2,7 +2,7 @@
   "bigquery": {
     "project_id": "mo-provision-reporting",
     "dataset_table_ir": "mo-provision-reporting.INSTALLATIONS_prod.VIS_IR_prod",
-    "table_name": "mo-provision-reporting.INSTALLATIONS_prod.VW_ENTRADA_CIERRE",
+    "table_name": "mo-provision-reporting.INSTALLATIONS_looker.VW_ENTRADA_CIERRE",
     "location": "EU"
   },
   "sharepoint": {
